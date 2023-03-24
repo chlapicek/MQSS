@@ -44,15 +44,26 @@ class GF2Mat(pandas.DataFrame):
 
 
     def solve(self) -> dict[str, int]:
-        # matrix = self
+        matrix = self
         # matrix = GF2Mat(matrix.drop_zeros_only_columns())
-        # matrix = GF2Mat(matrix.galois_row_reduce())
-        # matrix = GF2Mat(matrix._xor_same_indices())
+        matrix = GF2Mat(matrix.galois_row_reduce())
+        matrix = GF2Mat(matrix._xor_same_indices())
 
-        # variables: dict[str, int] = matrix._set_last_half_variables_to_zeros()
-        # matrix = GF2Mat(matrix._calculate_zero_columns(variables))
-        #
-        raise NotImplementedError
+        variables: dict[str, int] = matrix._set_last_half_variables_to_zeros()
+        self = matrix
+        matrix = GF2Mat(matrix._calculate_zero_columns(variables))
+        # matrix = GF2Mat(matrix._get_linear_rows())
+        return
+
+
+    def swap_columns(self, index1: int, index2: int) -> pandas.DataFrame:
+        self.loc[index1], self.loc[index2] = self.loc[index2], self.loc[index1]
+
+
+    # def _get_linear_rows(self) -> pandas.DataFrame:
+    #     for row in self.values:
+    #         print(row)
+
 
     def _xor_same_indices(self) -> pandas.DataFrame:
         for index in range(var_count):
@@ -94,6 +105,27 @@ def generate_col_names(n: int) -> list[str]:
     return res
 
 
+def generate_random_matrix_for_solution(solution: list[int]) -> GF2Mat:
+    col_names = generate_col_names(len(solution))
+    np.random.seed(0)
+    matrix = GF2Mat(np.random.randint(2, size=(var_count*2, len(col_names))), dtype=np.int8, columns=col_names)
+    for row in matrix.values:
+        row[-1] = 0
+        for index, elem in enumerate(row):
+            if elem == 1:
+                split = matrix.columns[index].split("_")
+                if len(split) == 3:
+                    var1 = int(split[1]) - 1
+                    var2 = int(split[2]) - 1
+                    if (solution[var1] == 1 and solution[var2] == 1):
+                        row[-1] = row[-1] ^ 1
+                elif len(split) == 2:
+                    var1 = int(split[1]) - 1
+                    if (solution[var1] == 1):
+                        row[-1] = row[-1] ^ 1
+    return matrix
+
+
 def load_data_from_file(path: str) -> tuple[int, np.array]:
     var_count: int = -1
     matrix: np.array = [] 
@@ -109,10 +141,15 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 
 if (__name__ == '__main__'):
-    var_count, matrix = load_data_from_file("data/type1-n4-seed0")
+    solution = [0, 1, 1, 0]
+    var_count = len(solution)
+    matrix = generate_random_matrix_for_solution(solution)
+    print(matrix)
+    print(matrix.is_valid_solution(solution))
+    # var_count, matrix = load_data_from_file("data/type1-n4-seed0")
 
-    col_names = generate_col_names(var_count)
+    # col_names = generate_col_names(var_count)
 
-    test: GF2Mat = GF2Mat(matrix, columns=col_names, dtype=np.uint8)
-    test.solve()
-    print(test.is_valid_solution([1, 0, 1, 0]))
+    # test: GF2Mat = GF2Mat(matrix, columns=col_names, dtype=np.uint8)
+    # test.solve()
+    # print(test.is_valid_solution([0, 1, 0, 1]))
