@@ -16,6 +16,14 @@ class GF2Mat(pandas.DataFrame):
         return pandas.DataFrame(gf2, columns=self.columns)
 
 
+    def has_solution(self) -> bool:
+        for row in self.values:
+            if row[-1] == 1:
+                if sum(row) - row[-1] == 0:
+                    return False        
+        return True  
+
+
     def is_valid_solution(self, solution: list[int]) -> bool:
         solution_row = self._get_solution_row(solution)
         if (len(solution_row) == 0):
@@ -52,7 +60,6 @@ class GF2Mat(pandas.DataFrame):
         variables: dict[str, int] = matrix._set_last_half_variables_to_zeros()
         self = matrix
         matrix = GF2Mat(matrix._calculate_zero_columns(variables))
-        # matrix = GF2Mat(matrix._get_linear_rows())
         return
 
 
@@ -60,12 +67,10 @@ class GF2Mat(pandas.DataFrame):
         self.loc[index1], self.loc[index2] = self.loc[index2], self.loc[index1]
 
 
-    # def _get_linear_rows(self) -> pandas.DataFrame:
-    #     for row in self.values:
-    #         print(row)
 
 
     def _xor_same_indices(self) -> pandas.DataFrame:
+        # VERIFY IF THE COLUMN EXISTS FIRST
         for index in range(var_count):
             index =  "_" + str(index+1)
             self["x"+index] = self["x"+index+index] ^ self["x"+index]
@@ -92,6 +97,55 @@ class GF2Mat(pandas.DataFrame):
                     matrix = matrix.drop(labels=column, axis=1)
                     break
         return matrix
+
+
+    def _get_next_combination(self):
+        solution = np.array([0] * var_count)
+        yield solution
+        while solution.min() != 1:
+            shift = 0
+            while True:
+                if solution[(var_count-1)-shift] == 1:
+                    solution[(var_count-1)-shift] = 0
+                    shift += 1
+                    continue
+                solution[[(var_count-1)-shift]] = 1
+                break
+            yield solution
+
+
+    def get_all_solutions(self) -> list[list[int]]:
+        solutions = []
+        for combination in self._get_next_combination():
+            if self.is_valid_solution(combination):
+                solutions.append(combination.copy())
+        return solutions
+    
+
+    def generate_new_row(self, variable: int, row_index: int) -> pandas.DataFrame:
+        new_row = self.iloc[row_index].copy()
+        for column, _ in new_row.items():
+            new_row[column] = 0
+
+        for column, value in self.iloc[row_index].items():
+            column = str(column)
+            if (value == 1):
+                if (f"_{variable}" in column):
+                    continue
+                if (len(column.split("_")) > 2):
+                    return self
+                split = column.split("_")
+                if len(split) == 1:
+                    new_row[f"x_{variable}"] = 1
+                if len(split) == 2:
+                    index = split[-1]
+                    if (int(index) < variable):
+                        new_row[f"x_{index}_{variable}"] = 1
+                    else:
+                        new_row[f"x_{variable}_{index}"] = 1
+                new_row[column] = 0
+        self.loc[len(self)] = new_row
+        return self
 
 
 def generate_col_names(n: int) -> list[str]:
@@ -144,8 +198,18 @@ if (__name__ == '__main__'):
     solution = [0, 1, 1, 0]
     var_count = len(solution)
     matrix = generate_random_matrix_for_solution(solution)
-    print(matrix)
-    print(matrix.is_valid_solution(solution))
+    # print(matrix.get_all_solutions())
+    # print(matrix)
+    # matrix = GF2Mat(matrix._xor_same_indices())
+    # print(matrix)
+    # print(matrix.galois_row_reduce())
+    matrix = GF2Mat(matrix._xor_same_indices())
+    matrix = GF2Mat(matrix.galois_row_reduce())
+    matrix.generate_new_row(1, 1)
+    # print(matrix)
+    # print(matrix.is_valid_solution(solution))
+    # matrix = matrix._xor_same_indices()
+    # print(matrix)
     # var_count, matrix = load_data_from_file("data/type1-n4-seed0")
 
     # col_names = generate_col_names(var_count)
