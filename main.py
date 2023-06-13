@@ -122,12 +122,17 @@ class GF2Mat(pandas.DataFrame):
         return solutions
     
 
+    def generate_new_rows(self) -> pandas.DataFrame:
+        rows = len(self)
+        for i in range(rows):
+            for j in range(var_count):
+                self = self.generate_new_row(j+1, i)
+        return self
+
+
     def generate_new_row(self, variable: int, row_index: int) -> pandas.DataFrame:
         new_row = self.iloc[row_index].copy()
-        for column, _ in new_row.items():
-            new_row[column] = 0
-
-        for column, value in self.iloc[row_index].items():
+        for column, value in new_row.items():
             column = str(column)
             if (value == 1):
                 if (f"_{variable}" in column):
@@ -136,16 +141,20 @@ class GF2Mat(pandas.DataFrame):
                     return self
                 split = column.split("_")
                 if len(split) == 1:
-                    new_row[f"x_{variable}"] = 1
+                    new_row[f"x_{variable}"] = new_row[f"x_{variable}"] ^ 1
                 if len(split) == 2:
                     index = split[-1]
                     if (int(index) < variable):
-                        new_row[f"x_{index}_{variable}"] = 1
+                        new_row[f"x_{index}_{variable}"] = new_row[f"x_{index}_{variable}"] ^ 1
                     else:
-                        new_row[f"x_{variable}_{index}"] = 1
+                        new_row[f"x_{variable}_{index}"] = new_row[f"x_{variable}_{index}"] ^ 1
                 new_row[column] = 0
         self.loc[len(self)] = new_row
         return self
+    
+
+    def drop_empty_rows(self) -> pandas.DataFrame:
+        return self.loc[~(self == 0).all(axis=1)]
 
 
 def generate_col_names(n: int) -> list[str]:
@@ -205,7 +214,6 @@ if (__name__ == '__main__'):
     # print(matrix.galois_row_reduce())
     matrix = GF2Mat(matrix._xor_same_indices())
     matrix = GF2Mat(matrix.galois_row_reduce())
-    matrix.generate_new_row(1, 1)
     # print(matrix)
     # print(matrix.is_valid_solution(solution))
     # matrix = matrix._xor_same_indices()
