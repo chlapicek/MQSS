@@ -4,6 +4,8 @@ import galois
 import re
 
 class GF2Mat(pandas.DataFrame):
+    # degree = 2
+
     def drop_zeros_only_columns(self) -> pandas.DataFrame:
         # https://stackoverflow.com/questions/21164910/how-do-i-delete-a-column-that-contains-only-zeros-in-pandas
         return  self.loc[:, (self != 0).any(axis=0)]
@@ -32,35 +34,29 @@ class GF2Mat(pandas.DataFrame):
 
 
     def _get_solution_row(self, solution: list[int]) -> list[int]:
-        if (len(solution) != var_count): # var_count should be property of G2MAT
+        if (len(solution) != var_count):
             return []
-        col_names = []
-        for col_name in self.loc[0].axes[0]:
-            col_names.append(re.findall("_\d+", col_name))
+        col_names = self.iloc[0].axes[0]
         solution_row = []
         for col_name in col_names:
-            if (len(col_name) == 2):
-                index1 = int(col_name[0].replace("_", ""))-1
-                index2 = int(col_name[1].replace("_", ""))-1
-                solution_row.append(solution[index1] & solution[index2])
-            elif (len(col_name) == 1):
-                index = int(col_name[0].replace("_", ""))-1
-                solution_row.append(solution[index])
-            else:
-                solution_row.append(1)
+            solution_row.append(1)
+            if col_name == (-1,):
+                continue
+            for var in col_name:
+                solution_row[-1] &= solution[var-1]
         return solution_row
 
 
-    def solve(self) -> dict[str, int]:
-        matrix = self
-        # matrix = GF2Mat(matrix.drop_zeros_only_columns())
-        matrix = GF2Mat(matrix.galois_row_reduce())
-        matrix = GF2Mat(matrix._xor_same_indices())
+    # def solve(self) -> dict[str, int]:
+    #     matrix = self
+    #     # matrix = GF2Mat(matrix.drop_zeros_only_columns())
+    #     matrix = GF2Mat(matrix.galois_row_reduce())
+    #     matrix = GF2Mat(matrix._xor_same_indices())
 
-        variables: dict[str, int] = matrix._set_last_half_variables_to_zeros()
-        self = matrix
-        matrix = GF2Mat(matrix._calculate_zero_columns(variables))
-        return
+    #     variables: dict[str, int] = matrix._set_last_half_variables_to_zeros()
+    #     self = matrix
+    #     matrix = GF2Mat(matrix._calculate_zero_columns(variables))
+    #     return
 
 
     def swap_columns(self, index1: int, index2: int) -> pandas.DataFrame:
@@ -71,32 +67,33 @@ class GF2Mat(pandas.DataFrame):
 
     def _xor_same_indices(self) -> pandas.DataFrame:
         # VERIFY IF THE COLUMN EXISTS FIRST
-        for index in range(var_count):
-            index =  "_" + str(index+1)
-            self["x"+index] = self["x"+index+index] ^ self["x"+index]
-            self = self.drop(labels="x"+index+index, axis=1)
-        return self
+        for x in range(2, degree+1):
+            for index in range(1, var_count+1):
+                index =  (index, )
+                self[index] = self[index * x] ^ self[index]
+                self = self.drop(labels=index * x, axis=1)
+            return self
         
 
-    def _set_last_half_variables_to_zeros(self) -> dict[str, int]:
-        variables = dict()
-        keys = self[self.columns[-(var_count//2)-1:]].keys().array
-        for key in keys:
-            variables[key] = 0
-        variables.pop("1")
-        return variables
+    # def _set_last_half_variables_to_zeros(self) -> dict[str, int]:
+    #     variables = dict()
+    #     keys = self[self.columns[-(var_count//2)-1:]].keys().array
+    #     for key in keys:
+    #         variables[key] = 0
+    #     variables.pop("1")
+    #     return variables
 
 
-    def _calculate_zero_columns(self, variables: dict[str, int]) -> pandas.DataFrame:
-        matrix = self
-        for column in matrix.columns:
-            for variable in variables:
-                variable = variable.replace("x", "")
-                if column.endswith(variable) or column.find(variable+"_") > -1:
-                    matrix["1"] = matrix["1"] ^ matrix[column] # not sure if we need to do that
-                    matrix = matrix.drop(labels=column, axis=1)
-                    break
-        return matrix
+    # def _calculate_zero_columns(self, variables: dict[str, int]) -> pandas.DataFrame:
+    #     matrix = self
+    #     for column in matrix.columns:
+    #         for variable in variables:
+    #             variable = variable.replace("x", "")
+    #             if column.endswith(variable) or column.find(variable+"_") > -1:
+    #                 matrix["1"] = matrix["1"] ^ matrix[column] # not sure if we need to do that
+    #                 matrix = matrix.drop(labels=column, axis=1)
+    #                 break
+    #     return matrix
 
 
     def _get_next_combination(self):
@@ -122,32 +119,37 @@ class GF2Mat(pandas.DataFrame):
         return solutions
     
 
-    def generate_new_rows(self) -> pandas.DataFrame:
+    def generate_new_rows(self, increase_degree: bool = True) -> pandas.DataFrame:
         rows = len(self)
         for i in range(rows):
             for j in range(var_count):
-                self = self.generate_new_row(j+1, i)
+                self = self.generate_new_row(j+1, i, increase_degree)
         return self
 
 
-    def generate_new_row(self, variable: int, row_index: int) -> pandas.DataFrame:
+    def generate_new_row(self, variable: int, row_index: int, increase_degree: bool = False) -> pandas.DataFrame:
+        global degree # TODO remove when not needed
         new_row = self.iloc[row_index].copy()
-        for column, value in new_row.items():
-            column = str(column)
+        for column, value in new_row.items(): #if columns are swapped it may not work
             if (value == 1):
-                if (f"_{variable}" in column):
+                if (variable in column):
                     continue
-                if (len(column.split("_")) > 2):
-                    return self
-                split = column.split("_")
-                if len(split) == 1:
-                    new_row[f"x_{variable}"] = new_row[f"x_{variable}"] ^ 1
-                if len(split) == 2:
-                    index = split[-1]
-                    if (int(index) < variable):
-                        new_row[f"x_{index}_{variable}"] = new_row[f"x_{index}_{variable}"] ^ 1
+                if (len(column) >= degree):
+                    if (increase_degree):
+                        degree += 1
                     else:
-                        new_row[f"x_{variable}_{index}"] = new_row[f"x_{variable}_{index}"] ^ 1
+                        return self
+                if (len(column) == 1 and column[0] == -1):
+                    new_index = (variable,)
+                else:
+                    new_index = tuple(sorted(list((variable,) + column)))
+                if not new_index in new_row.keys():
+                    self.insert(0, new_index, 0)
+                    temp = pandas.DataFrame(new_row).T
+                    temp.insert(0, new_index, 1)
+                    new_row = pandas.Series(temp.iloc[0], dtype=pandas.Int8Dtype())
+                else:
+                    new_row[new_index] = new_row[new_index] ^ 1
                 new_row[column] = 0
         self.loc[len(self)] = new_row
         return self
@@ -161,34 +163,34 @@ def generate_col_names(n: int) -> list[str]:
     res = []
     for i in range(1, n+1):
         for j in range(1, i+1):
-            res.append(f"x_{j}_{i}")
+            res.append((j, i))
     for i in range(1, n+1):
-        res.append(f"x_{i}")
-    res.append("1")
+        res.append((i,))
+    res.append((-1,))
     return res
 
 
-def generate_random_matrix_for_solution(solution: list[int]) -> GF2Mat:
+def generate_random_matrix_for_solution(solution: list[int], seed: int = 0) -> GF2Mat:
     col_names = generate_col_names(len(solution))
-    np.random.seed(0)
+    np.random.seed(seed)
     matrix = GF2Mat(np.random.randint(2, size=(var_count*2, len(col_names))), dtype=np.int8, columns=col_names)
     for row in matrix.values:
         row[-1] = 0
         for index, elem in enumerate(row):
             if elem == 1:
-                split = matrix.columns[index].split("_")
-                if len(split) == 3:
-                    var1 = int(split[1]) - 1
-                    var2 = int(split[2]) - 1
+                col_name = matrix.columns[index]
+                if len(col_name) == 2:
+                    var1 = col_name[0]-1
+                    var2 = col_name[1]-1
                     if (solution[var1] == 1 and solution[var2] == 1):
                         row[-1] = row[-1] ^ 1
-                elif len(split) == 2:
-                    var1 = int(split[1]) - 1
+                elif col_name[0] > -1:
+                    var1 = col_name[0]-1
                     if (solution[var1] == 1):
                         row[-1] = row[-1] ^ 1
     return matrix
 
-
+#Change to tuples
 def load_data_from_file(path: str) -> tuple[int, np.array]:
     var_count: int = -1
     matrix: np.array = [] 
@@ -205,7 +207,8 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 if (__name__ == '__main__'):
     solution = [0, 1, 1, 0]
-    var_count = len(solution)
+    var_count = len(solution) # should be property of the matrix itself
+    degree = 2 # should be property of the matrix itself
     matrix = generate_random_matrix_for_solution(solution)
     # print(matrix.get_all_solutions())
     # print(matrix)
@@ -214,14 +217,8 @@ if (__name__ == '__main__'):
     # print(matrix.galois_row_reduce())
     matrix = GF2Mat(matrix._xor_same_indices())
     matrix = GF2Mat(matrix.galois_row_reduce())
-    # print(matrix)
-    # print(matrix.is_valid_solution(solution))
-    # matrix = matrix._xor_same_indices()
-    # print(matrix)
-    # var_count, matrix = load_data_from_file("data/type1-n4-seed0")
-
-    # col_names = generate_col_names(var_count)
-
-    # test: GF2Mat = GF2Mat(matrix, columns=col_names, dtype=np.uint8)
-    # test.solve()
-    # print(test.is_valid_solution([0, 1, 0, 1]))
+    matrix = GF2Mat(matrix.generate_new_rows())
+    matrix = GF2Mat(matrix.galois_row_reduce())
+    matrix = GF2Mat(matrix.drop_empty_rows())
+    print(matrix)
+    print(matrix.get_all_solutions())
