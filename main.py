@@ -4,7 +4,9 @@ import galois
 import time
 
 class GF2Mat(pandas.DataFrame):
-    # degree = 2
+    degree = 2
+    solution = {}
+    guessed_variables = []
 
     def drop_zeros_only_columns(self) -> pandas.DataFrame:
         # https://stackoverflow.com/questions/21164910/how-do-i-delete-a-column-that-contains-only-zeros-in-pandas
@@ -23,7 +25,7 @@ class GF2Mat(pandas.DataFrame):
             if row[-1] == 1:
                 if sum(row) - row[-1] == 0:
                     return False        
-        return True  
+        return True
 
 
     def is_valid_solution(self, solution: list[int]) -> bool:
@@ -52,8 +54,8 @@ class GF2Mat(pandas.DataFrame):
 
 
     def _xor_same_indices(self) -> pandas.DataFrame:
-        # VERIFY IF THE COLUMN EXISTS FIRST
-        for x in range(2, degree+1):
+        # TODO Verify if the column exists first
+        for x in range(2, self.degree+1):
             for index in range(1, var_count+1):
                 index =  (index, )
                 self[index] = self[index * x] ^ self[index]
@@ -88,20 +90,22 @@ class GF2Mat(pandas.DataFrame):
         rows = len(self)
         for i in range(rows):
             for j in range(var_count):
+                if (j+1 in self.solution.keys()):
+                    continue
                 self = self.generate_new_row(j+1, i, increase_degree)
         return self
 
 
     def generate_new_row(self, variable: int, row_index: int, increase_degree: bool = False) -> pandas.DataFrame:
-        global degree # TODO remove when not needed
+        # global degree # TODO remove when not needed
         new_row = self.iloc[row_index].copy()
         for column, value in new_row.items(): #if columns are swapped it may not work
             if (value == 1):
                 if (variable in column):
                     continue
-                if (len(column) >= degree):
+                if (len(column) >= self.degree):
                     if (increase_degree):
-                        degree += 1
+                        self.degree += 1
                     else:
                         return self
                 if (len(column) == 1 and column[0] == -1):
@@ -118,6 +122,8 @@ class GF2Mat(pandas.DataFrame):
                 else:
                     new_row[new_index] = new_row[new_index] ^ 1
                 new_row[column] = 0
+        # modification: When a new row is generated, we can directly get it to the row echelon form by adding other rows
+        # This modification should probably decrease the overhead needed for generating
         self.loc[len(self)] = new_row
         return self
     
@@ -156,18 +162,31 @@ class GF2Mat(pandas.DataFrame):
         return pandas.DataFrame(result, columns=columns)
 
 
-    def solve(self) -> pandas.DataFrame:
+    def solve(self):
         start_time = time.time()
         self = GF2Mat(self._xor_same_indices())
+        # copy = GF2Mat(self.copy())
+        # copy.set_half_variables_to_zero()
+        # while True:
+        #     if (copy.has_solution):
+        #         break
+        #     copy_guessed = copy.guessed_variables
+        #     copy_solution = copy.solution
+        #     copy = GF2Mat(self.copy())
+
         self = GF2Mat(self.galois_row_reduce())
         linear = GF2Mat([])
         increase_degree = False
-        while (len(linear.index) < var_count):
+        while (len(linear.index) + len(self.solution) < var_count):
             self = GF2Mat(self.generate_new_rows(increase_degree))
             self = GF2Mat(self.galois_row_reduce())
             self = GF2Mat(self.drop_empty_rows())
             linear = GF2Mat(self.get_linear_submatrix())
             increase_degree = True
+            if self.degree > var_count:
+                break
+        if not self.has_solution():
+            return
         result = linear.numpy_linalg_solve()
         if (result.size > 0):
             print(matrix.is_valid_solution(result.values.tolist()[0]))
@@ -175,6 +194,32 @@ class GF2Mat(pandas.DataFrame):
         end_time = time.time()
         elapsed_time = end_time - start_time
         print(elapsed_time)
+
+
+    def set_variable(self, variable: int, value: int, guessed: bool = False)-> None:
+        self.solution[variable] = value
+        if guessed:
+            self.guessed_variables.append(value)
+        columns = sorted(self.columns, key=len, reverse=True)
+        for column in columns:
+            if variable in column:
+                if value == 1:
+                    new_column = list(column)
+                    new_column.remove(variable)
+                    if len(new_column) == 0:
+                        new_column = (-1,)
+                    else:
+                        new_column = tuple(new_column)
+                    self[new_column] ^= self[column]
+                self.drop(column, axis=1, inplace=True)
+
+
+    def set_half_variables_to_zero(self) -> None:
+        variables = [x for x in range(1, var_count+1)]
+        variables = np.random.permutation(variables)
+        variables = variables[:len(variables)//2]
+        for variable in variables:
+            self.set_variable(variable, 0, True)
 
 
 def generate_col_names(n: int) -> list[str]:
@@ -224,9 +269,8 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 
 if (__name__ == '__main__'):
-    solution = [0, 1, 1, 0, 1, 1]
-    var_count = len(solution) # should be property of the matrix itself
-    degree = 2 # should be property of the matrix itself
-    matrix = generate_random_matrix_for_solution(solution)
+    solution_key = [0, 1, 1, 0, 1, 1]
+    var_count = len(solution_key) # should be property of the matrix itself
+    matrix = generate_random_matrix_for_solution(solution_key)
     matrix.solve()
     
