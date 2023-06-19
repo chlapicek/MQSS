@@ -64,6 +64,7 @@ class GF2Mat(pandas.DataFrame):
 
 
     def _get_next_combination(self):
+        var_count = len(self.guessed_variables)
         solution = np.array([0] * var_count)
         yield solution
         while solution.min() != 1:
@@ -73,14 +74,16 @@ class GF2Mat(pandas.DataFrame):
                     solution[(var_count-1)-shift] = 0
                     shift += 1
                     continue
-                solution[[(var_count-1)-shift]] = 1
+                solution[(var_count-1)-shift] = 1
                 break
             yield solution
+        yield [-1]
+
 
     # generate with numba paralelly?
     def get_all_solutions(self) -> list[list[int]]:
         solutions = []
-        for combination in self._get_next_combination():
+        for combination in self._get_next_combination(var_count):
             if self.is_valid_solution(combination):
                 solutions.append(combination.copy())
         return solutions
@@ -165,16 +168,32 @@ class GF2Mat(pandas.DataFrame):
     def solve(self):
         start_time = time.time()
         self = GF2Mat(self._xor_same_indices())
-        # copy = GF2Mat(self.copy())
-        # copy.set_half_variables_to_zero()
-        # while True:
-        #     if (copy.has_solution):
-        #         break
-        #     copy_guessed = copy.guessed_variables
-        #     copy_solution = copy.solution
-        #     copy = GF2Mat(self.copy())
 
+        copy = GF2Mat(self.copy())
+        self.set_x_variables_to_zero(var_count//2)
+        guessed = self.guessed_variables.copy()
         self = GF2Mat(self.galois_row_reduce())
+        cycle = True
+        while cycle:
+            for combination in self._get_next_combination():
+                if (combination[0] == -1):
+                    cycle = False
+                    break
+                if (self.has_solution()):
+                    if (self.solve_linear()):
+                        cycle = False
+                        break
+                self = GF2Mat(copy.copy())
+                for x in range(len(guessed)):
+                    self.set_variable(guessed[x], combination[x], True)
+                self = GF2Mat(self.galois_row_reduce())
+
+        print(self.solution)   
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(elapsed_time)
+    
+    def solve_linear(self) -> bool: 
         linear = GF2Mat([])
         increase_degree = False
         while (len(linear.index) + len(self.solution) < var_count):
@@ -182,24 +201,25 @@ class GF2Mat(pandas.DataFrame):
             self = GF2Mat(self.galois_row_reduce())
             self = GF2Mat(self.drop_empty_rows())
             linear = GF2Mat(self.get_linear_submatrix())
-            increase_degree = True
+            # increase_degree = True
             if self.degree > var_count:
                 break
-        if not self.has_solution():
-            return
+        if not linear.has_solution():
+            return False
         result = linear.numpy_linalg_solve()
         if (result.size > 0):
-            print(matrix.is_valid_solution(result.values.tolist()[0]))
-        print(result)
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        print(elapsed_time)
+            result_dict = result.to_dict()
+            for res in result_dict:
+                self.set_variable(res[0], result_dict[res][0], False)
+            return True
+        return False
 
 
     def set_variable(self, variable: int, value: int, guessed: bool = False)-> None:
         self.solution[variable] = value
         if guessed:
-            self.guessed_variables.append(value)
+            if (not variable in self.guessed_variables):
+                self.guessed_variables.append(variable)
         columns = sorted(self.columns, key=len, reverse=True)
         for column in columns:
             if variable in column:
@@ -214,10 +234,10 @@ class GF2Mat(pandas.DataFrame):
                 self.drop(column, axis=1, inplace=True)
 
 
-    def set_half_variables_to_zero(self) -> None:
+    def set_x_variables_to_zero(self, x: int) -> None:
         variables = [x for x in range(1, var_count+1)]
         variables = np.random.permutation(variables)
-        variables = variables[:len(variables)//2]
+        variables = variables[:x]
         for variable in variables:
             self.set_variable(variable, 0, True)
 
@@ -233,9 +253,8 @@ def generate_col_names(n: int) -> list[str]:
     return res
 
 
-def generate_random_matrix_for_solution(solution: list[int], seed: int = 0) -> GF2Mat:
+def generate_random_matrix_for_solution(solution: list[int]) -> GF2Mat:
     col_names = generate_col_names(len(solution))
-    np.random.seed(seed)
     matrix = GF2Mat(np.random.randint(2, size=(var_count*2, len(col_names))), dtype=np.int8, columns=col_names)
     for row in matrix.values:
         row[-1] = 0
@@ -269,7 +288,8 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 
 if (__name__ == '__main__'):
-    solution_key = [0, 1, 1, 0, 1, 1]
+    np.random.seed(0)
+    solution_key = [0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
     var_count = len(solution_key) # should be property of the matrix itself
     matrix = generate_random_matrix_for_solution(solution_key)
     matrix.solve()
