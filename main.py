@@ -95,7 +95,9 @@ class GF2Mat(pandas.DataFrame):
             for j in range(var_count):
                 if (j+1 in self.solution.keys()):
                     continue
-                self = self.generate_new_row(j+1, i, increase_degree)
+                self.generate_new_row(j+1, i, increase_degree)
+                if len(self) >= len(self.columns):
+                    return self
         return self
 
 
@@ -121,15 +123,35 @@ class GF2Mat(pandas.DataFrame):
                     self.insert(0, new_index, 0)
                     temp = pandas.DataFrame(new_row).T
                     temp.insert(0, new_index, 1)
-                    new_row = pandas.Series(temp.iloc[0], dtype=pandas.Int8Dtype())
+                    new_row = pandas.Series(temp.iloc[0], dtype=np.int8)
                 else:
                     new_row[new_index] = new_row[new_index] ^ 1
                 new_row[column] = 0
         # modification: When a new row is generated, we can directly get it to the row echelon form by adding other rows
         # This modification should probably decrease the overhead needed for generating
-        self.loc[len(self)] = new_row
+        # self.loc[len(self)] = new_row
+
+        self.add_last_row(new_row)
         return self
     
+
+    def add_last_row(self, row: pandas.Series) -> pandas.DataFrame:
+        for i in range(min(len(row)-1, len(self.index)-1)):
+            if row[i] == 1:
+                if self.iloc[i][i] == 1:
+                    row ^= self.iloc[i]
+        row_ones = row[row > 0]
+        if row_ones.any():
+            if len(row_ones) == 1 and row[-1] == 1:
+                return self
+            index = row.to_list().index(1)
+            self.loc[len(self)] = row
+            if (index >= len(self)-1):
+                return self
+            # self.iloc[index], self.iloc[len(self)-1] = self.iloc[len(self)-1].copy(), self.iloc[index].copy()
+            self = pandas.concat([self.iloc[:index], row.to_frame().T, self.iloc[index:]])
+        return self
+
 
     def drop_empty_rows(self) -> pandas.DataFrame:
         return self.loc[~(self == 0).all(axis=1)]
@@ -179,29 +201,31 @@ class GF2Mat(pandas.DataFrame):
                 if (combination[0] == -1):
                     cycle = False
                     break
+                self = GF2Mat(copy.copy())
+                for i in range(len(guessed)):
+                    self.set_variable(guessed[i], combination[i], True)
+                self = GF2Mat(self.galois_row_reduce())
+
                 if (self.has_solution()):
                     if (self.solve_linear()):
                         cycle = False
                         break
-                self = GF2Mat(copy.copy())
-                for x in range(len(guessed)):
-                    self.set_variable(guessed[x], combination[x], True)
-                self = GF2Mat(self.galois_row_reduce())
 
         print(self.solution)   
         end_time = time.time()
         elapsed_time = end_time - start_time
         print(elapsed_time)
-    
+
+
     def solve_linear(self) -> bool: 
         linear = GF2Mat([])
         increase_degree = False
+        self = GF2Mat(self.galois_row_reduce())
+        self = GF2Mat(self.drop_empty_rows())
         while (len(linear.index) + len(self.solution) < var_count):
             self = GF2Mat(self.generate_new_rows(increase_degree))
-            self = GF2Mat(self.galois_row_reduce())
-            self = GF2Mat(self.drop_empty_rows())
             linear = GF2Mat(self.get_linear_submatrix())
-            # increase_degree = True
+            self.degree += 1
             if self.degree > var_count:
                 break
         if not linear.has_solution():
@@ -289,7 +313,7 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 if (__name__ == '__main__'):
     np.random.seed(0)
-    solution_key = [0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0]
     var_count = len(solution_key) # should be property of the matrix itself
     matrix = generate_random_matrix_for_solution(solution_key)
     matrix.solve()
