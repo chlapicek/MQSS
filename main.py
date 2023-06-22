@@ -96,7 +96,7 @@ class GF2Mat(pandas.DataFrame):
                 if (j+1 in self.solution.keys()):
                     continue
                 self.generate_new_row(j+1, i, increase_degree)
-                if len(self) >= len(self.columns):
+                if len(self) >= len(self.columns)-1:
                     return self
         return self
 
@@ -104,21 +104,19 @@ class GF2Mat(pandas.DataFrame):
     def generate_new_row(self, variable: int, row_index: int, increase_degree: bool = False) -> pandas.DataFrame:
         # global degree # TODO remove when not needed
         new_row = self.iloc[row_index].copy()
-        for column, value in new_row.items(): #if columns are swapped it may not work
+        for column_name, value in new_row.items(): #if columns are swapped it may not work
             if (value == 1):
-                if (variable in column):
+                if (variable in column_name):
                     continue
-                if (len(column) >= self.degree):
-                    if (increase_degree):
-                        self.degree += 1
-                    else:
+                if (len(column_name) >= self.degree):
+                    # if (increase_degree):
+                    #     self.degree += 1
+                    # else:
                         return self
-                if (len(column) == 1 and column[0] == -1):
+                if (len(column_name) == 1 and column_name[0] == -1):
                     new_index = (variable,)
                 else:
-                    new_index = tuple(sorted(list((variable,) + column)))
-                # if (increase_degree == True and len(new_index) < degree): # some kind of condition is necessary in here, otherwise some combinations are generated again
-                #     return self
+                    new_index = tuple(sorted(list((variable,) + column_name)))
                 if not new_index in new_row.keys():
                     self.insert(0, new_index, 0)
                     temp = pandas.DataFrame(new_row).T
@@ -126,31 +124,48 @@ class GF2Mat(pandas.DataFrame):
                     new_row = pandas.Series(temp.iloc[0], dtype=np.int8)
                 else:
                     new_row[new_index] = new_row[new_index] ^ 1
-                new_row[column] = 0
+                new_row[column_name] = 0
         # modification: When a new row is generated, we can directly get it to the row echelon form by adding other rows
         # This modification should probably decrease the overhead needed for generating
         # self.loc[len(self)] = new_row
-
+        # temp = GF2Mat(pandas.DataFrame(new_row).T).get_degree_submatrix(self.degree)
+        # if not temp.empty():
+        #     return self
         self.add_last_row(new_row)
         return self
     
 
-    def add_last_row(self, row: pandas.Series) -> pandas.DataFrame:
-        for i in range(min(len(row)-1, len(self.index)-1)):
+    def add_last_row(self, row: pandas.Series) -> None:
+        for i in range(min(len(row), len(self.index)-1)):
             if row[i] == 1:
+                # if self[self.columns.values[i]].sum() > 0:
                 if self.iloc[i][i] == 1:
-                    row ^= self.iloc[i]
+                    index = self[self.columns.values[i]].to_list().index(1)
+                    row ^= self.iloc[index]
+                    if row.sum() == 0:
+                        return
         row_ones = row[row > 0]
         if row_ones.any():
             if len(row_ones) == 1 and row[-1] == 1:
-                return self
-            index = row.to_list().index(1)
+                return
             self.loc[len(self)] = row
+            index = row.to_list().index(1)
+            self.fix_column(index)
             if (index >= len(self)-1):
-                return self
-            # self.iloc[index], self.iloc[len(self)-1] = self.iloc[len(self)-1].copy(), self.iloc[index].copy()
-            self = pandas.concat([self.iloc[:index], row.to_frame().T, self.iloc[index:]])
-        return self
+                return
+            for i in range(index, len(self)):
+                self.iloc[i], self.iloc[len(self)-1] = self.iloc[len(self)-1].copy(), self.iloc[i].copy()
+        return
+
+
+    def fix_column(self, column: int | tuple) -> None:
+        if type(column) is int:
+            col = self.columns[column]
+        else:
+            col = self[column]
+        for index, cell in enumerate(self[col]):
+            if cell == 1 and index != len(self)-1:
+                self.iloc[index] ^= self.iloc[-1]
 
 
     def drop_empty_rows(self) -> pandas.DataFrame:
@@ -224,6 +239,9 @@ class GF2Mat(pandas.DataFrame):
         self = GF2Mat(self.drop_empty_rows())
         while (len(linear.index) + len(self.solution) < var_count):
             self = GF2Mat(self.generate_new_rows(increase_degree))
+            self = GF2Mat(self.drop_zeros_only_columns())
+            self = GF2Mat(self.galois_row_reduce())
+            self = GF2Mat(self.drop_empty_rows())
             linear = GF2Mat(self.get_linear_submatrix())
             self.degree += 1
             if self.degree > var_count:
@@ -313,7 +331,7 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 if (__name__ == '__main__'):
     np.random.seed(0)
-    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0]
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0]
     var_count = len(solution_key) # should be property of the matrix itself
     matrix = generate_random_matrix_for_solution(solution_key)
     matrix.solve()
