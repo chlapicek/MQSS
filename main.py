@@ -89,19 +89,21 @@ class GF2Mat(pandas.DataFrame):
         return solutions
 
 
-    def generate_new_rows(self, increase_degree: bool = False) -> pandas.DataFrame:
+    def generate_new_rows(self, generate_more: int = 1) -> pandas.DataFrame:
         rows = len(self)
         for i in range(rows):
             for j in range(var_count):
                 if (j+1 in self.solution.keys()):
                     continue
-                self.generate_new_row(j+1, i, increase_degree)
-                if len(self) >= len(self.columns)-1:
+                self.generate_new_row(j+1, i)
+                if (not self.is_in_rref()):
+                    pass
+                if len(self) >= len(self.columns)-1 * generate_more:
                     return self
         return self
 
 
-    def generate_new_row(self, variable: int, row_index: int, increase_degree: bool = False) -> pandas.DataFrame:
+    def generate_new_row(self, variable: int, row_index: int) -> pandas.DataFrame:
         # global degree # TODO remove when not needed
         new_row = self.iloc[row_index].copy()
         for column_name, value in new_row.items(): #if columns are swapped it may not work
@@ -131,28 +133,43 @@ class GF2Mat(pandas.DataFrame):
         # temp = GF2Mat(pandas.DataFrame(new_row).T).get_degree_submatrix(self.degree)
         # if not temp.empty():
         #     return self
-        self.add_last_row(new_row)
+        ones = new_row.where(new_row > 0).dropna()
+        for col in ones.index:
+            if len(col) == self.degree:
+                self.add_last_row(new_row)
+                break
         return self
     
 
-    def add_last_row(self, row: pandas.Series) -> None:
-        for i in range(min(len(row), len(self.index)-1)):
-            if row[i] == 1:
-                # if self[self.columns.values[i]].sum() > 0:
-                if self.iloc[i][i] == 1:
-                    index = self[self.columns.values[i]].to_list().index(1)
-                    row ^= self.iloc[index]
-                    if row.sum() == 0:
-                        return
-        row_ones = row[row > 0]
+    def add_last_row(self, new_row: pandas.Series) -> None:
+        # for i in range(min(len(row), len(self.index)-1)):
+        #     if row[i] == 1:
+        #         # if self[self.columns.values[i]].sum() > 0:
+        #         if self.iloc[i][i] == 1:
+        #             index = self[self.columns.values[i]].to_list().index(1)
+        #             row ^= self.iloc[index]
+        #             if row.sum() == 0:
+        #                 return
+        for i in range(len(self)):
+            row = self.iloc[i]
+            row_ones = row[row > 0]
+            if (len(row_ones) > 0):
+                index = row_ones.index[0]
+                if new_row[index] == 1:
+                    new_row ^= row
+            if new_row.sum() == 0:
+                return
+
+        row_ones = new_row[new_row > 0]
         if row_ones.any():
             if len(row_ones) == 1 and row[-1] == 1:
                 return
-            self.loc[len(self)] = row
-            index = row.to_list().index(1)
+            self.loc[len(self)] = new_row
+            index = new_row.to_list().index(1)
             self.fix_column(index)
             if (index >= len(self)-1):
                 return
+            # find the correct index where to put it
             for i in range(index, len(self)):
                 self.iloc[i], self.iloc[len(self)-1] = self.iloc[len(self)-1].copy(), self.iloc[i].copy()
         return
@@ -234,16 +251,19 @@ class GF2Mat(pandas.DataFrame):
 
     def solve_linear(self) -> bool: 
         linear = GF2Mat([])
-        increase_degree = False
+        generate_more = 1
         self = GF2Mat(self.galois_row_reduce())
         self = GF2Mat(self.drop_empty_rows())
         while (len(linear.index) + len(self.solution) < var_count):
-            self = GF2Mat(self.generate_new_rows(increase_degree))
+            self = GF2Mat(self.generate_new_rows(generate_more))
             self = GF2Mat(self.drop_zeros_only_columns())
-            self = GF2Mat(self.galois_row_reduce())
+            # self = GF2Mat(self.galois_row_reduce())
             self = GF2Mat(self.drop_empty_rows())
             linear = GF2Mat(self.get_linear_submatrix())
-            self.degree += 1
+            if (generate_more >= 3):
+                self.degree += 1
+                generate_more = 1
+            generate_more += 1
             if self.degree > var_count:
                 break
         if not linear.has_solution():
@@ -282,6 +302,26 @@ class GF2Mat(pandas.DataFrame):
         variables = variables[:x]
         for variable in variables:
             self.set_variable(variable, 0, True)
+
+
+    def is_in_rref(self) -> bool:
+        zero_row = False
+        prev_index = -1
+        for i in range(len(self)):
+            row = self.iloc[i]
+            row_ones = row[row > 0]
+            if row_ones.sum() == 0:
+                zero_row = True
+                continue
+            elif row_ones.sum() > 0 and zero_row:
+                return False
+            index = row_ones.index[0]
+            if self[index].sum() > 1:
+                return False
+            if self.columns.get_loc(index) <= prev_index:
+                return False
+            prev_index = self.columns.get_loc(index)
+        return True
 
 
 def generate_col_names(n: int) -> list[str]:
@@ -331,7 +371,7 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 if (__name__ == '__main__'):
     np.random.seed(0)
-    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0]
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0]
     var_count = len(solution_key) # should be property of the matrix itself
     matrix = generate_random_matrix_for_solution(solution_key)
     matrix.solve()
