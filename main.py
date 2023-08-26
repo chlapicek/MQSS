@@ -2,6 +2,8 @@ import numpy as np
 import pandas
 import galois
 import time
+import itertools
+
 
 class GF2Mat(pandas.DataFrame):
     degree = 2
@@ -53,136 +55,17 @@ class GF2Mat(pandas.DataFrame):
         self.loc[index1], self.loc[index2] = self.loc[index2], self.loc[index1]
 
 
-    def _xor_same_indices(self) -> pandas.DataFrame:
+    def _xor_same_indices(self, drop: bool = True) -> pandas.DataFrame:
         # TODO Verify if the column exists first
         for x in range(2, self.degree+1):
             for index in range(1, var_count+1):
                 index =  (index, )
                 self[index] = self[index * x] ^ self[index]
-                self = self.drop(labels=index * x, axis=1)
+                if drop:
+                    self = self.drop(labels=index * x, axis=1)
+                else:
+                    self[index] = 0
             return self
-
-
-    def _get_next_combination(self):
-        var_count = len(self.guessed_variables)
-        solution = np.array([0] * var_count)
-        yield solution
-        while solution.min() != 1:
-            shift = 0
-            while True:
-                if solution[(var_count-1)-shift] == 1:
-                    solution[(var_count-1)-shift] = 0
-                    shift += 1
-                    continue
-                solution[(var_count-1)-shift] = 1
-                break
-            yield solution
-        yield [-1]
-
-
-    # generate with numba paralelly?
-    def get_all_solutions(self) -> list[list[int]]:
-        solutions = []
-        for combination in self._get_next_combination(var_count):
-            if self.is_valid_solution(combination):
-                solutions.append(combination.copy())
-        return solutions
-
-
-    def generate_new_rows(self, generate_more: int = 1) -> pandas.DataFrame:
-        rows = len(self)
-        for i in range(rows):
-            for j in range(var_count):
-                if (j+1 in self.solution.keys()):
-                    continue
-                self.generate_new_row(j+1, i)
-                if (not self.is_in_rref()):
-                    pass
-                if len(self) >= len(self.columns)-1 * generate_more:
-                    return self
-        return self
-
-
-    def generate_new_row(self, variable: int, row_index: int) -> pandas.DataFrame:
-        # global degree # TODO remove when not needed
-        new_row = self.iloc[row_index].copy()
-        for column_name, value in new_row.items(): #if columns are swapped it may not work
-            if (value == 1):
-                if (variable in column_name):
-                    continue
-                if (len(column_name) >= self.degree):
-                    # if (increase_degree):
-                    #     self.degree += 1
-                    # else:
-                        return self
-                if (len(column_name) == 1 and column_name[0] == -1):
-                    new_index = (variable,)
-                else:
-                    new_index = tuple(sorted(list((variable,) + column_name)))
-                if not new_index in new_row.keys():
-                    self.insert(0, new_index, 0)
-                    temp = pandas.DataFrame(new_row).T
-                    temp.insert(0, new_index, 1)
-                    new_row = pandas.Series(temp.iloc[0], dtype=np.int8)
-                else:
-                    new_row[new_index] = new_row[new_index] ^ 1
-                new_row[column_name] = 0
-        # modification: When a new row is generated, we can directly get it to the row echelon form by adding other rows
-        # This modification should probably decrease the overhead needed for generating
-        # self.loc[len(self)] = new_row
-        # temp = GF2Mat(pandas.DataFrame(new_row).T).get_degree_submatrix(self.degree)
-        # if not temp.empty():
-        #     return self
-        ones = new_row.where(new_row > 0).dropna()
-        for col in ones.index:
-            if len(col) == self.degree:
-                self.add_last_row(new_row)
-                break
-        return self
-    
-
-    def add_last_row(self, new_row: pandas.Series) -> None:
-        # for i in range(min(len(row), len(self.index)-1)):
-        #     if row[i] == 1:
-        #         # if self[self.columns.values[i]].sum() > 0:
-        #         if self.iloc[i][i] == 1:
-        #             index = self[self.columns.values[i]].to_list().index(1)
-        #             row ^= self.iloc[index]
-        #             if row.sum() == 0:
-        #                 return
-        for i in range(len(self)):
-            row = self.iloc[i]
-            row_ones = row[row > 0]
-            if (len(row_ones) > 0):
-                index = row_ones.index[0]
-                if new_row[index] == 1:
-                    new_row ^= row
-            if new_row.sum() == 0:
-                return
-
-        row_ones = new_row[new_row > 0]
-        if row_ones.any():
-            if len(row_ones) == 1 and row[-1] == 1:
-                return
-            self.loc[len(self)] = new_row
-            index = new_row.to_list().index(1)
-            self.fix_column(index)
-            if (index >= len(self)-1):
-                return
-            # find the correct index where to put it
-            for i in range(index, len(self)):
-                self.iloc[i], self.iloc[len(self)-1] = self.iloc[len(self)-1].copy(), self.iloc[i].copy()
-        return
-
-
-    def fix_column(self, column: int | tuple) -> None:
-        if type(column) is int:
-            col = self.columns[column]
-        else:
-            col = self[column]
-        for index, cell in enumerate(self[col]):
-            if cell == 1 and index != len(self)-1:
-                self.iloc[index] ^= self.iloc[-1]
 
 
     def drop_empty_rows(self) -> pandas.DataFrame:
@@ -277,7 +160,7 @@ class GF2Mat(pandas.DataFrame):
         return False
 
 
-    def set_variable(self, variable: int, value: int, guessed: bool = False)-> None:
+    def set_variable(self, variable: int, value: int, guessed: bool = False, drop: bool = True)-> None:
         self.solution[variable] = value
         if guessed:
             if (not variable in self.guessed_variables):
@@ -293,15 +176,18 @@ class GF2Mat(pandas.DataFrame):
                     else:
                         new_column = tuple(new_column)
                     self[new_column] ^= self[column]
-                self.drop(column, axis=1, inplace=True)
+                if (drop):
+                    self.drop(column, axis=1, inplace=True)
+                else:
+                    self[column] = 0
 
 
-    def set_x_variables_to_zero(self, x: int) -> None:
+    def set_x_variables_to_zero(self, x: int, drop: bool = True) -> None:
         variables = [x for x in range(1, var_count+1)]
         variables = np.random.permutation(variables)
         variables = variables[:x]
         for variable in variables:
-            self.set_variable(variable, 0, True)
+            self.set_variable(variable, 0, True, drop)
 
 
     def is_in_rref(self) -> bool:
@@ -322,6 +208,50 @@ class GF2Mat(pandas.DataFrame):
                 return False
             prev_index = self.columns.get_loc(index)
         return True
+
+
+    def generate_rows(self, prev_row_count: int):
+        new_index = prev_row_count
+        for i in range(var_count):
+            if (i+1 in self.solution.keys()):
+                continue
+            for j in range(prev_row_count):
+                self.iloc[new_index] = self.generate_row(i+1, j)
+                new_index += 1
+
+
+    def generate_row(self, variable: int, row_index: int) -> pandas.Series:
+        new_row = self.iloc[row_index].copy()
+        for column_name, value in new_row.items(): #if columns are swapped it may not work
+            if (value == 1):
+                if (variable in column_name):
+                    continue
+                if (len(column_name) >= self.degree):
+                        x = 1/0
+                if (len(column_name) == 1 and column_name[0] == -1):
+                    new_index = (variable,)
+                else:
+                    new_index = tuple(sorted(list((variable,) + column_name)))
+                new_row[new_index] = new_row[new_index] ^ 1
+                new_row[column_name] = 0
+        return new_row
+
+
+
+    def test(self) -> None:
+        drop = False
+        self = GF2Mat(self._xor_same_indices())
+        # self.set_x_variables_to_zero(var_count//2, drop)
+        # guessed = self.guessed_variables.copy()
+        self.degree += 1
+        new_col_names = generate_all_column_names(self.degree, var_count)
+        prev_row_count = self.shape[0] 
+        total_row_count =  (var_count+1) * prev_row_count
+        self = GF2Mat(self.reindex(columns=new_col_names, index=range(total_row_count), fill_value=0))
+        self = GF2Mat(self._xor_same_indices())
+        self.degree += 1
+        self.generate_rows(prev_row_count)
+        print(self)
 
 
 def generate_col_names(n: int) -> list[str]:
@@ -355,6 +285,24 @@ def generate_random_matrix_for_solution(solution: list[int]) -> GF2Mat:
     return matrix
 
 
+def generate_column_names(tuple_length: int, max_number: int) -> list[tuple]:
+    names = list(itertools.combinations_with_replacement(range(1, max_number+1), tuple_length))
+    if (tuple_length > 2):
+        names = list(filter(lambda x: len(set(x)) == tuple_length, names))
+    for i in range(tuple_length):
+        names.sort(key=lambda x: x[i])
+    return names
+
+
+def generate_all_column_names(highest_tuple_length: int, max_number: int):
+    result = []
+    for i in range(highest_tuple_length, 0, -1):
+        result.extend(generate_column_names(i, max_number))
+    result.extend([(-1,)])
+    return result
+
+
+
 def load_data_from_file(path: str) -> tuple[int, np.array]:
     var_count: int = -1
     matrix: np.array = [] 
@@ -371,8 +319,9 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 if (__name__ == '__main__'):
     np.random.seed(0)
-    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0]
+    solution_key = [0, 1, 1, 0, 1]
     var_count = len(solution_key) # should be property of the matrix itself
     matrix = generate_random_matrix_for_solution(solution_key)
-    matrix.solve()
-    
+    # matrix.solve()
+    matrix.test()
+    print(generate_all_column_names(3, 3))
