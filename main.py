@@ -6,7 +6,6 @@ import itertools
 
 
 class GF2Mat(pandas.DataFrame):
-    degree = 2
     solution = {}
     guessed_variables = []
 
@@ -57,7 +56,7 @@ class GF2Mat(pandas.DataFrame):
 
     def _xor_same_indices(self, drop: bool = True) -> pandas.DataFrame:
         # TODO Verify if the column exists first
-        for x in range(2, self.degree+1):
+        for x in range(2, degree+1):
             for index in range(1, var_count+1):
                 index =  (index, )
                 self[index] = self[index * x] ^ self[index]
@@ -210,48 +209,60 @@ class GF2Mat(pandas.DataFrame):
         return True
 
 
-    def generate_rows(self, prev_row_count: int):
+    def generate_rows(self, prev_row_count: int, degree_rows: list[int]):
         new_index = prev_row_count
-        for i in range(var_count):
-            if (i+1 in self.solution.keys()):
-                continue
-            for j in range(prev_row_count):
-                self.iloc[new_index] = self.generate_row(i+1, j)
-                new_index += 1
+        for deg in range(2, degree):
+            deg_sum = sum(degree_rows[:deg-1])
+            for i in range(var_count):
+                if (i+1 in self.solution.keys()):
+                    continue
+                for j in range(degree_rows[deg-2], degree_rows[deg-2] + degree_rows[deg-1]):
+                    self.generate_row(i+1, j, new_index)
+                    new_index += 1
 
 
-    def generate_row(self, variable: int, row_index: int) -> pandas.Series:
+    def generate_row(self, variable: int, row_index: int, row_insert: int) -> None:
         new_row = self.iloc[row_index].copy()
         for column_name, value in new_row.items(): #if columns are swapped it may not work
             if (value == 1):
                 if (variable in column_name):
                     continue
-                if (len(column_name) >= self.degree):
-                        x = 1/0
                 if (len(column_name) == 1 and column_name[0] == -1):
                     new_index = (variable,)
                 else:
                     new_index = tuple(sorted(list((variable,) + column_name)))
                 new_row[new_index] = new_row[new_index] ^ 1
                 new_row[column_name] = 0
-        return new_row
+        self.iloc[row_insert] = new_row
 
 
 
     def test(self) -> None:
+        global degree
         drop = False
+        degree_rows = [0]
+        degree_rows.append(self.shape[0])
         self = GF2Mat(self._xor_same_indices())
         # self.set_x_variables_to_zero(var_count//2, drop)
         # guessed = self.guessed_variables.copy()
-        self.degree += 1
-        new_col_names = generate_all_column_names(self.degree, var_count)
-        prev_row_count = self.shape[0] 
-        total_row_count =  (var_count+1) * prev_row_count
-        self = GF2Mat(self.reindex(columns=new_col_names, index=range(total_row_count), fill_value=0))
-        self = GF2Mat(self._xor_same_indices())
-        self.degree += 1
-        self.generate_rows(prev_row_count)
-        print(self)
+        while True:
+            degree += 1
+            new_col_names = generate_all_column_names(degree, var_count)
+            prev_row_count = self.shape[0] 
+            total_row_count =  (var_count+1) * prev_row_count
+            self = GF2Mat(self.reindex(columns=new_col_names, index=range(total_row_count), fill_value=0))
+            degree_rows.append(self.shape[0] - sum(degree_rows))
+            if (self.shape[0] < self.shape[1]-1):
+                continue
+            self.generate_rows(prev_row_count, degree_rows)
+            self = GF2Mat(self.galois_row_reduce())
+            self = GF2Mat(self.drop_empty_rows())
+            if (self.has_solution()):
+                linear = GF2Mat(self.get_linear_submatrix())
+                result = linear.numpy_linalg_solve()
+                if (len(result)):
+                    print(result)
+                    break
 
 
 def generate_col_names(n: int) -> list[str]:
@@ -319,9 +330,17 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 if (__name__ == '__main__'):
     np.random.seed(0)
-    solution_key = [0, 1, 1, 0, 1]
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
+    # solution_key = [0, 1, 1, 0, 1, ] # 5
     var_count = len(solution_key) # should be property of the matrix itself
+    degree = 2
     matrix = generate_random_matrix_for_solution(solution_key)
     # matrix.solve()
     matrix.test()
-    print(generate_all_column_names(3, 3))
+
+
+# Zprovoznit řešení, leč i pomalé.
+# Správně počítat potřebný počet řádků
+# Začít Zahazovat proměnné, reindexovat
+# Najít popis algoritmu pro underdetermined (méně rovnic jak proměnných)
+# Zapojit Pollard-Rho
