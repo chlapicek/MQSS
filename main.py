@@ -3,6 +3,7 @@ import pandas
 import galois
 import time
 import itertools
+import numba
 
 
 class GF2Mat(pandas.DataFrame):
@@ -101,62 +102,62 @@ class GF2Mat(pandas.DataFrame):
         return pandas.DataFrame(result, columns=columns)
 
 
-    def solve(self):
-        start_time = time.time()
-        self = GF2Mat(self._xor_same_indices())
+    # def solve(self):
+    #     start_time = time.time()
+    #     self = GF2Mat(self._xor_same_indices())
 
-        copy = GF2Mat(self.copy())
-        self.set_x_variables_to_zero(var_count//2)
-        guessed = self.guessed_variables.copy()
-        self = GF2Mat(self.galois_row_reduce())
-        cycle = True
-        while cycle:
-            for combination in self._get_next_combination():
-                if (combination[0] == -1):
-                    cycle = False
-                    break
-                self = GF2Mat(copy.copy())
-                for i in range(len(guessed)):
-                    self.set_variable(guessed[i], combination[i], True)
-                self = GF2Mat(self.galois_row_reduce())
+    #     copy = GF2Mat(self.copy())
+    #     self.set_x_variables_to_zero(var_count//2)
+    #     guessed = self.guessed_variables.copy()
+    #     self = GF2Mat(self.galois_row_reduce())
+    #     cycle = True
+    #     while cycle:
+    #         for combination in self._get_next_combination():
+    #             if (combination[0] == -1):
+    #                 cycle = False
+    #                 break
+    #             self = GF2Mat(copy.copy())
+    #             for i in range(len(guessed)):
+    #                 self.set_variable(guessed[i], combination[i], True)
+    #             self = GF2Mat(self.galois_row_reduce())
 
-                if (self.has_solution()):
-                    if (self.solve_linear()):
-                        cycle = False
-                        break
+    #             if (self.has_solution()):
+    #                 if (self.solve_linear()):
+    #                     cycle = False
+    #                     break
 
-        print(self.solution)   
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        print(elapsed_time)
+    #     print(self.solution)   
+    #     end_time = time.time()
+    #     elapsed_time = end_time - start_time
+    #     print(elapsed_time)
 
 
-    def solve_linear(self) -> bool: 
-        linear = GF2Mat([])
-        generate_more = 1
-        self = GF2Mat(self.galois_row_reduce())
-        self = GF2Mat(self.drop_empty_rows())
-        while (len(linear.index) + len(self.solution) < var_count):
-            self = GF2Mat(self.generate_new_rows(generate_more))
-            self = GF2Mat(self.drop_zeros_only_columns())
-            # self = GF2Mat(self.galois_row_reduce())
-            self = GF2Mat(self.drop_empty_rows())
-            linear = GF2Mat(self.get_linear_submatrix())
-            if (generate_more >= 3):
-                self.degree += 1
-                generate_more = 1
-            generate_more += 1
-            if self.degree > var_count:
-                break
-        if not linear.has_solution():
-            return False
-        result = linear.numpy_linalg_solve()
-        if (result.size > 0):
-            result_dict = result.to_dict()
-            for res in result_dict:
-                self.set_variable(res[0], result_dict[res][0], False)
-            return True
-        return False
+    # def solve_linear(self) -> bool: 
+    #     linear = GF2Mat([])
+    #     generate_more = 1
+    #     self = GF2Mat(self.galois_row_reduce())
+    #     self = GF2Mat(self.drop_empty_rows())
+    #     while (len(linear.index) + len(self.solution) < var_count):
+    #         self = GF2Mat(self.generate_new_rows(generate_more))
+    #         self = GF2Mat(self.drop_zeros_only_columns())
+    #         # self = GF2Mat(self.galois_row_reduce())
+    #         self = GF2Mat(self.drop_empty_rows())
+    #         linear = GF2Mat(self.get_linear_submatrix())
+    #         if (generate_more >= 3):
+    #             self.degree += 1
+    #             generate_more = 1
+    #         generate_more += 1
+    #         if self.degree > var_count:
+    #             break
+    #     if not linear.has_solution():
+    #         return False
+    #     result = linear.numpy_linalg_solve()
+    #     if (result.size > 0):
+    #         result_dict = result.to_dict()
+    #         for res in result_dict:
+    #             self.set_variable(res[0], result_dict[res][0], False)
+    #         return True
+    #     return False
 
 
     def set_variable(self, variable: int, value: int, guessed: bool = False, drop: bool = True)-> None:
@@ -209,18 +210,18 @@ class GF2Mat(pandas.DataFrame):
         return True
 
 
+    @numba.jit
     def generate_rows(self, prev_row_count: int, degree_rows: list[int]):
         new_index = prev_row_count
-        for deg in range(2, degree):
-            deg_sum = sum(degree_rows[:deg-1])
-            for i in range(var_count):
-                if (i+1 in self.solution.keys()):
-                    continue
-                for j in range(degree_rows[deg-2], degree_rows[deg-2] + degree_rows[deg-1]):
-                    self.generate_row(i+1, j, new_index)
-                    new_index += 1
+        for i in range(var_count):
+            if (i+1 in self.solution.keys()):
+                continue
+            for j in range(degree_rows[-3], degree_rows[-3] + degree_rows[-2]):
+                self.generate_row(i+1, j, new_index)
+                new_index += 1
 
 
+    @numba.jit
     def generate_row(self, variable: int, row_index: int, row_insert: int) -> None:
         new_row = self.iloc[row_index].copy()
         for column_name, value in new_row.items(): #if columns are swapped it may not work
@@ -239,8 +240,11 @@ class GF2Mat(pandas.DataFrame):
 
     def test(self) -> None:
         global degree
+
+        start_time = time.time()
+
         drop = False
-        degree_rows = [0]
+        degree_rows = [0] # should probably contain ranges, doesn't work after galois_row_reduce()
         degree_rows.append(self.shape[0])
         self = GF2Mat(self._xor_same_indices())
         # self.set_x_variables_to_zero(var_count//2, drop)
@@ -252,17 +256,21 @@ class GF2Mat(pandas.DataFrame):
             total_row_count =  (var_count+1) * prev_row_count
             self = GF2Mat(self.reindex(columns=new_col_names, index=range(total_row_count), fill_value=0))
             degree_rows.append(self.shape[0] - sum(degree_rows))
+            self.generate_rows(prev_row_count, degree_rows)
             if (self.shape[0] < self.shape[1]-1):
                 continue
-            self.generate_rows(prev_row_count, degree_rows)
             self = GF2Mat(self.galois_row_reduce())
             self = GF2Mat(self.drop_empty_rows())
+            self = GF2Mat(self.drop_zeros_only_columns())
             if (self.has_solution()):
                 linear = GF2Mat(self.get_linear_submatrix())
                 result = linear.numpy_linalg_solve()
                 if (len(result)):
                     print(result)
                     break
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(elapsed_time)
 
 
 def generate_col_names(n: int) -> list[str]:
@@ -330,6 +338,7 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 if (__name__ == '__main__'):
     np.random.seed(0)
+    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
     solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
     # solution_key = [0, 1, 1, 0, 1, ] # 5
     var_count = len(solution_key) # should be property of the matrix itself
