@@ -4,7 +4,9 @@ import galois
 import time
 import itertools
 import numba
-
+import cProfile
+import pstats
+from tqdm import tqdm
 
 class GF2Mat(pandas.DataFrame):
     solution = {}
@@ -254,11 +256,11 @@ class GF2Mat(pandas.DataFrame):
         total = pow(2, var_count//2)
         comb = 0
         # degree_rows = {}
-        for combination in self._get_next_combination(var_count//2):
+        for combination in tqdm(self._get_next_combination(var_count//2), total=pow(2, var_count//2)):
             if finished:
                 break
-            comb += 1
-            print(f"{comb} out of {total}, {combination}")
+            # comb += 1
+            # print(f"{comb} out of {total}, {combination}")
             self = GF2Mat(copy.copy())
             for i in range(len(guessed)):
                 self.set_variable(guessed[i], combination[i], True)
@@ -378,16 +380,19 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 if (__name__ == '__main__'):
     np.random.seed(0)
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
-    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
-    # solution_key = [0, 1, 1, 0, 1, ] # 5
+    # # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
+    # # solution_key = [0, 1, 1, 0, 1, ] # 5
     # var_count = len(solution_key) # should be property of the matrix itself
     degree = 2
     # matrix = generate_random_matrix_for_solution(solution_key)
     var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-55-0\\challenge-1-55-0")
     col_names = generate_all_column_names(degree, var_count)
     matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
-    # matrix.solve()
-    matrix.test()
+    
+    cProfile.run("matrix.test()", "test_profile")
+    stats = pstats.Stats("test_profile")
+    stats.sort_stats('cumulative')
+    stats.print_stats(100)
 
 
 # Zprovoznit řešení, leč i pomalé. OK
