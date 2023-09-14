@@ -213,12 +213,12 @@ class GF2Mat(pandas.DataFrame):
 
 
     @numba.jit
-    def generate_rows(self, prev_row_count: int):
+    def generate_rows(self, prev_row_count: int, degree_range: range):
         new_index = prev_row_count
         for i in range(var_count):
             if (i+1 in self.solution.keys()):
                 continue
-            for j in range(prev_row_count):
+            for j in degree_range:
                 if (self.generate_row(i+1, j, new_index)):
                     new_index += 1
 
@@ -245,6 +245,7 @@ class GF2Mat(pandas.DataFrame):
     # @numba.jit
     def test(self) -> None:
         global degree
+        self.get_degree_range(degree=2)
         
         start_time = time.time()
         finished: bool = False
@@ -255,7 +256,7 @@ class GF2Mat(pandas.DataFrame):
         guessed = self.guessed_variables.copy()
         total = pow(2, var_count//2)
         comb = 0
-        # degree_rows = {}
+        degree_rows = {}
         for combination in tqdm(self._get_next_combination(var_count//2), total=pow(2, var_count//2)):
             if finished:
                 break
@@ -264,23 +265,22 @@ class GF2Mat(pandas.DataFrame):
             self = GF2Mat(copy.copy())
             for i in range(len(guessed)):
                 self.set_variable(guessed[i], combination[i], True)
-            # degree_rows[0] = range(0, 0)
-            # degree_rows[1] = range(0, 0)
+            degree_rows[2] = range(0, self.shape[0])
             # degree_rows = [0] # should probably contain ranges, doesn't work after galois_row_reduce()
             # degree_rows.append(self.shape[0])
             while True:
                 degree += 1
                 # degree_rows.append(self.shape[0] - sum(degree_rows))
                 new_col_names = generate_all_column_names(degree, var_count, guessed, True)
-                prev_row_count = self.shape[0]
+                prev_row_count = (self.get_degree_last_row(degree-1) + 1) - self.get_degree_first_row(degree-1)
                 total_row_count =  ((var_count - len(guessed)) + 1) * prev_row_count
                 self = GF2Mat(self.reindex(columns=new_col_names, index=range(total_row_count), fill_value=0))
-                self.generate_rows(prev_row_count)
-                if (self.shape[0] < self.shape[1]-1):
-                    continue
+                self.generate_rows(prev_row_count, degree_rows[degree-1])
                 self = GF2Mat(self.galois_row_reduce())
                 self = GF2Mat(self.drop_empty_rows())
                 self = GF2Mat(self.drop_zeros_only_columns())
+                for deg in range(2, degree+1):
+                    degree_rows[deg] = self.get_degree_range(deg)
                 if (self.shape[0] < self.shape[1]-1):
                     continue
                 if (self.has_solution()):
@@ -304,6 +304,73 @@ class GF2Mat(pandas.DataFrame):
         end_time = time.time()
         elapsed_time = end_time - start_time
         print(elapsed_time)
+
+
+    def get_degree_range(self, degree: int) -> range:
+        min = self.get_degree_first_row(degree)
+        max = self.get_degree_last_row(degree)
+        return range(min, max+1)
+    
+
+    def get_degree_first_row(self, degree: int) -> int:
+        min_index = 0
+        max_index = self.shape[0] - 1
+        index = (min_index + max_index) // 2
+
+        if self.get_row_degree(min_index) == degree:
+            return min_index
+
+        while min_index <= max_index:
+            index = (min_index + max_index) // 2
+            if self.get_row_degree(index-1) != degree and self.get_row_degree(index) == degree:
+                return index
+            if self.get_row_degree(index) <= degree:
+                max_index = index - 1
+            else:
+                min_index = index + 1
+
+        return -1
+
+
+
+    def get_degree_last_row(self, degree: int) -> int:
+        min_index = 0
+        max_index = self.shape[0] - 1
+
+        if self.get_row_degree(max_index) == degree:
+            return max_index
+
+        while min_index <= max_index:
+            index = (min_index + max_index) // 2
+            if self.get_row_degree(index+1) != degree and self.get_row_degree(index) == degree:
+                return index
+            if self.get_row_degree(index) < degree:
+                max_index = index - 1
+            else:
+                min_index = index + 1
+
+        return -1
+
+
+    def row_starts_with_degree(self, degree: int, row_index: int) -> bool:
+        row = self.iloc[row_index]
+        for col, value in row.items():
+            if len(col) < degree:
+                break
+            if value == 1:
+                if (len(col) == degree):
+                    return True
+                return False
+        return False
+
+
+    def get_row_degree(self, row_index: int) -> int:
+        row = self.iloc[row_index]
+        for col, value in row.items():
+            if value == 1:
+                return len(col)
+        return -1
+
 
 
     def _get_next_combination(self, var_count: int):
@@ -380,14 +447,14 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 if (__name__ == '__main__'):
     np.random.seed(0)
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
-    # # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
     # # solution_key = [0, 1, 1, 0, 1, ] # 5
-    # var_count = len(solution_key) # should be property of the matrix itself
+    var_count = len(solution_key) # should be property of the matrix itself
     degree = 2
-    # matrix = generate_random_matrix_for_solution(solution_key)
-    var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-55-0\\challenge-1-55-0")
-    col_names = generate_all_column_names(degree, var_count)
-    matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
+    matrix = generate_random_matrix_for_solution(solution_key)
+    # var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-55-0\\challenge-1-55-0")
+    # col_names = generate_all_column_names(degree, var_count)
+    # matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
     
     cProfile.run("matrix.test()", "test_profile")
     stats = pstats.Stats("test_profile")
