@@ -6,6 +6,7 @@ import itertools
 import numba
 import cProfile
 import pstats
+from z3 import *
 from tqdm import tqdm
 
 class GF2Mat(pandas.DataFrame):
@@ -378,6 +379,42 @@ class GF2Mat(pandas.DataFrame):
             yield solution
 
 
+    def transform_to_z3(self, row_indices: list[int]) -> Solver:
+        solver = Solver()
+        colNameToVar = {}
+        counter = 1
+
+        for column in self.columns:
+            if len(column) > 1:
+                colNameToVar[column] = Bool(f"y{counter}")
+                counter += 1
+            elif column == (-1,):
+                continue
+            else:
+                colNameToVar[column] = Bool(f"x{column[0]}")
+
+        for column in self.columns:
+            if len(column) > 1:
+                solver.add(And( Or(colNameToVar[column], Not(colNameToVar[(column[0],)]), Not(colNameToVar[(column[1],)])),
+                                Or(colNameToVar[(column[0],)], Not(colNameToVar[column])),
+                                Or(colNameToVar[(column[1],)], Not(colNameToVar[column]))))
+
+        for index in row_indices:
+            is_odd = False
+            vars = []
+            for col_name, value in self.iloc[index].items():
+                if col_name == (-1, ) and value == 1:
+                    is_odd = True
+                elif value == 1:
+                    vars.append(colNameToVar[col_name])
+            solver.add(Sum([If(b, 1, 0) for b in vars]) % 2 == is_odd)
+
+        solver.check()
+        print(solver.model())
+
+        return solver
+
+
 def generate_col_names(n: int) -> list[str]:
     res = []
     for i in range(1, n+1):
@@ -448,22 +485,20 @@ if (__name__ == '__main__'):
 
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
-    # # solution_key = [0, 1, 1, 0, 1, ] # 5
+    # solution_key = [0, 1, 1, 0, 1, ] # 5
     # var_count = len(solution_key) # should be property of the matrix itself
     degree = 2
     # matrix = generate_random_matrix_for_solution(solution_key)
-    var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-55-0\\challenge-1-55-0")
+    var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-80-0\\challenge-1-80-0")
     col_names = generate_all_column_names(degree, var_count)
     matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
-    
-    cProfile.run("matrix.test()", "test_profile")
-    stats = pstats.Stats("test_profile")
-    stats.sort_stats('cumulative')
-    stats.print_stats(100)
 
 
-# Zprovoznit řešení, leč i pomalé. OK
-# Správně počítat potřebný počet řádků
-# Začít Zahazovat proměnné, reindexovat OK?
-# Najít popis algoritmu pro underdetermined (méně rovnic jak proměnných)
-# Zapojit Pollard-Rho
+
+    matrix = GF2Mat(matrix._xor_same_indices())
+    matrix.transform_to_z3([i for i in range(0, 5)])
+
+    # cProfile.run("matrix.test()", "test_profile")
+    # stats = pstats.Stats("test_profile")
+    # stats.sort_stats('cumulative')
+    # stats.print_stats(100)
