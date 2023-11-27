@@ -409,10 +409,103 @@ class GF2Mat(pandas.DataFrame):
                     vars.append(colNameToVar[col_name])
             solver.add(Sum([If(b, 1, 0) for b in vars]) % 2 == is_odd)
 
-        solver.check()
-        print(solver.model())
-
         return solver
+
+
+
+
+
+
+    def find_variables(self, group_size: int):
+        row_count = self.shape[0]
+        stats: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
+        solvers = []
+        x = np.int32(np.ceil(row_count/group_size))
+
+        for _ in range(x):
+            rows = list(self.sample(n=group_size).T.columns)
+            solver = matrix.transform_to_z3(rows)
+            solvers.append(solver)
+            is_sat = solver.check()
+            if is_sat != sat:
+                1/0
+            model = solver.model()
+            for res in model.decls():
+                if str(res).startswith('x'):
+                    if model[res]:
+                        stats[str(res)] += 1
+
+        default_solvers = []
+        for solver in solvers:
+            default_solvers.append(solver.assertions())
+
+        for i in range(1, var_count+1):
+            combinations = list(itertools.product([False, True], repeat=i))
+            for combination in tqdm(combinations):
+                z = 0
+                for index, solver in enumerate(solvers):
+                    solver = default_solvers[index] 
+                always_true = True
+                determined_vars = {}
+                broken = False
+                for index, var in enumerate(combination):
+                    var_name = f"x{index+1}"
+                    determined_vars[var_name] = var
+                    if not self.modify_solvers(var_name, solvers, var):
+                        broken = True
+                        break
+                if broken:
+                    continue
+
+                while always_true:
+                    max = -1
+                    var = ""
+                    for key in stats.keys():
+                        if stats[key] > max and key not in determined_vars.keys():
+                            max = stats[key]
+                            var = key
+                    determined_vars[var] = True
+
+                    if not self.modify_solvers(var, solvers):
+                        break
+
+                    stats = self.get_stats(solvers)
+
+                    result = []
+                    for i in range(1, var_count+1):
+                        result.append(1 if f"x{i}" in determined_vars.keys() and determined_vars[f"x{i}"] else 0)
+                    is_result = self.is_valid_solution(result)
+                    if is_result:
+                        print(result)
+                        return result
+
+                    if len(determined_vars) > var_count:
+                        print(determined_vars)
+                        1/0
+
+
+    def modify_solvers(self, var: str, solvers: list[Solver], value: bool = True) -> bool:
+        for solver in solvers:
+            solver.add(Bool(var) == value)
+            is_sat = solver.check()
+            if is_sat != sat:
+                return False
+        return True
+
+
+    def get_stats(self, solvers: list[Solver]) -> dict[str, int]:
+        stats: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
+        for solver in solvers:
+            model = solver.model()
+            for res in model.decls():
+                if str(res).startswith('x'):
+                    if model[res]:
+                        stats[str(res)] += 1
+        return stats
+
+
+
+
 
 
 def generate_col_names(n: int) -> list[str]:
@@ -484,21 +577,23 @@ if (__name__ == '__main__'):
     np.random.seed(0)
 
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
-    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
+    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 10
     # solution_key = [0, 1, 1, 0, 1, ] # 5
-    # var_count = len(solution_key) # should be property of the matrix itself
+    var_count = len(solution_key) # should be property of the matrix itself
     degree = 2
-    # matrix = generate_random_matrix_for_solution(solution_key)
-    var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-80-0\\challenge-1-80-0")
+    matrix = generate_random_matrix_for_solution(solution_key)
+    # var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-75-0\\challenge-1-75-0")
     col_names = generate_all_column_names(degree, var_count)
     matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
 
 
-
     matrix = GF2Mat(matrix._xor_same_indices())
-    matrix.transform_to_z3([i for i in range(0, 5)])
+    matrix = GF2Mat(matrix.galois_row_reduce())
+
+    cProfile.run("matrix.find_variables(10)", "test_profile")
 
     # cProfile.run("matrix.test()", "test_profile")
-    # stats = pstats.Stats("test_profile")
-    # stats.sort_stats('cumulative')
-    # stats.print_stats(100)
+    stats = pstats.Stats("test_profile")
+    stats.sort_stats('cumulative')
+    stats.print_stats(100)
