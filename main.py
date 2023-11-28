@@ -420,53 +420,43 @@ class GF2Mat(pandas.DataFrame):
         row_count = self.shape[0]
         stats: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
         solvers = []
-        x = np.int32(np.ceil(row_count/group_size))
+        solver_count = np.int32(np.ceil(row_count/group_size))
 
-        for _ in range(x):
+        for _ in range(solver_count):
             rows = list(self.sample(n=group_size).T.columns)
             solver = matrix.transform_to_z3(rows)
             solvers.append(solver)
-            is_sat = solver.check()
-            if is_sat != sat:
-                1/0
-            model = solver.model()
-            for res in model.decls():
-                if str(res).startswith('x'):
-                    if model[res]:
-                        stats[str(res)] += 1
-
-        default_solvers = []
-        for solver in solvers:
-            default_solvers.append(solver.assertions())
 
         for i in range(1, var_count+1):
             combinations = list(itertools.product([False, True], repeat=i))
             for combination in tqdm(combinations):
-                z = 0
-                for index, solver in enumerate(solvers):
-                    solver = default_solvers[index] 
-                always_true = True
                 determined_vars = {}
-                broken = False
+                assumptions = []
                 for index, var in enumerate(combination):
                     var_name = f"x{index+1}"
                     determined_vars[var_name] = var
-                    if not self.modify_solvers(var_name, solvers, var):
-                        broken = True
-                        break
-                if broken:
-                    continue
+                    assumptions.append(Bool(var_name) if var else Not(Bool(var_name)))
 
-                while always_true:
-                    max = -1
-                    var = ""
+                while len(determined_vars) <= var_count:
+                    max_stat = -1
+                    min_stat = solver_count + 1
+                    max_var_name = ""
+                    min_var_name = ""
                     for key in stats.keys():
-                        if stats[key] > max and key not in determined_vars.keys():
-                            max = stats[key]
-                            var = key
-                    determined_vars[var] = True
+                        if stats[key] > max_stat and key not in determined_vars.keys():
+                            max_stat = stats[key]
+                            max_var_name = key
+                        if stats[key] < min_stat and key not in determined_vars.keys():
+                            min_stat = stats[key]
+                            min_var_name = key
+                    if min_stat < solver_count - max_stat:
+                        determined_vars[min_var_name] = False
+                        assumptions.append(Not(Bool(min_var_name)))
+                    else:
+                        determined_vars[max_var_name] = True
+                        assumptions.append(Bool(var_name))
 
-                    if not self.modify_solvers(var, solvers):
+                    if not self.check_solvers(solvers, assumptions):
                         break
 
                     stats = self.get_stats(solvers)
@@ -479,18 +469,13 @@ class GF2Mat(pandas.DataFrame):
                         print(result)
                         return result
 
-                    if len(determined_vars) > var_count:
-                        print(determined_vars)
-                        1/0
 
-
-    def modify_solvers(self, var: str, solvers: list[Solver], value: bool = True) -> bool:
+    def check_solvers(self, solvers: list[Solver], assumptions: list[any]) -> bool:
         for solver in solvers:
-            solver.add(Bool(var) == value)
-            is_sat = solver.check()
-            if is_sat != sat:
+            is_sat = solver.check(assumptions)
+            if is_sat == unsat:
                 return False
-        return True
+        return True 
 
 
     def get_stats(self, solvers: list[Solver]) -> dict[str, int]:
@@ -576,8 +561,9 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 if (__name__ == '__main__'):
     np.random.seed(0)
 
-    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
-    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
+    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
+    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 10
     # solution_key = [0, 1, 1, 0, 1, ] # 5
     var_count = len(solution_key) # should be property of the matrix itself
