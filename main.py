@@ -6,6 +6,9 @@ import itertools
 import numba
 import cProfile
 import pstats
+import multiprocessing.pool
+import threading
+from copy import deepcopy
 from z3 import *
 from tqdm import tqdm
 
@@ -38,6 +41,13 @@ class GF2Mat(pandas.DataFrame):
         if (len(solution_row) == 0):
             return False # throw ex?
         return ((self & solution_row).sum(axis=1) % 2 == 0).min()
+
+
+    def num_of_satisfied_equations(self, solution: list[int]) -> int:
+        solution_row = self._get_solution_row(solution)
+        if (len(solution_row) == 0):
+            return 0 # throw ex?
+        return sum((self & solution_row).sum(axis=1) % 2 == 0)
 
 
     def _get_solution_row(self, solution: list[int]) -> list[int]:
@@ -379,19 +389,19 @@ class GF2Mat(pandas.DataFrame):
             yield solution
 
 
-    def transform_to_z3(self, row_indices: list[int]) -> Solver:
-        solver = Solver()
+    def transform_to_z3(self, row_indices: list[int], ctx: Context) -> Solver:
+        solver = Solver(ctx=ctx)
         colNameToVar = {}
         counter = 1
 
         for column in self.columns:
             if len(column) > 1:
-                colNameToVar[column] = Bool(f"y{counter}")
+                colNameToVar[column] = Bool(f"y{counter}", ctx)
                 counter += 1
             elif column == (-1,):
                 continue
             else:
-                colNameToVar[column] = Bool(f"x{column[0]}")
+                colNameToVar[column] = Bool(f"x{column[0]}", ctx)
 
         for column in self.columns:
             if len(column) > 1:
@@ -412,19 +422,18 @@ class GF2Mat(pandas.DataFrame):
         return solver
 
 
-
-
-
-
     def find_variables(self, group_size: int):
         row_count = self.shape[0]
         stats: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
         solvers = []
-        solver_count = np.int32(np.ceil(row_count/group_size))
+        contexts: dict[Solver, Context] = {}
+        solver_count = np.int32(np.ceil(row_count/group_size) * 1.5)
 
         for _ in range(solver_count):
             rows = list(self.sample(n=group_size).T.columns)
-            solver = matrix.transform_to_z3(rows)
+            solver_ctx = Context()
+            solver = self.transform_to_z3(rows, solver_ctx)
+            contexts[solver] = solver_ctx
             solvers.append(solver)
 
         for i in range(1, var_count+1):
@@ -437,16 +446,16 @@ class GF2Mat(pandas.DataFrame):
                     determined_vars[var_name] = var
                     assumptions.append(Bool(var_name) if var else Not(Bool(var_name)))
 
-                while len(determined_vars) <= var_count:
+                while len(determined_vars) < var_count:
                     max_stat = -1
                     min_stat = solver_count + 1
                     max_var_name = ""
                     min_var_name = ""
                     for key in stats.keys():
-                        if stats[key] > max_stat and key not in determined_vars.keys():
+                        if stats[key] > max_stat and not (key in determined_vars):
                             max_stat = stats[key]
                             max_var_name = key
-                        if stats[key] < min_stat and key not in determined_vars.keys():
+                        if stats[key] < min_stat and not (key in determined_vars):
                             min_stat = stats[key]
                             min_var_name = key
                     if min_stat < solver_count - max_stat:
@@ -454,39 +463,61 @@ class GF2Mat(pandas.DataFrame):
                         assumptions.append(Not(Bool(min_var_name)))
                     else:
                         determined_vars[max_var_name] = True
-                        assumptions.append(Bool(var_name))
+                        assumptions.append(Bool(max_var_name))
 
-                    if not self.check_solvers(solvers, assumptions):
+                    with multiprocessing.pool.ThreadPool(len(solvers)) as pool:
+                        all_results = pool.starmap(self.check_solver, [(solver, assumptions, contexts[solver]) for solver in solvers])
+                    if not all(all_results):
                         break
-
-                    stats = self.get_stats(solvers)
-
+                    
                     result = []
                     for i in range(1, var_count+1):
-                        result.append(1 if f"x{i}" in determined_vars.keys() and determined_vars[f"x{i}"] else 0)
+                        result.append(1 if f"x{i}" in determined_vars and determined_vars[f"x{i}"] else 0)
                     is_result = self.is_valid_solution(result)
                     if is_result:
                         print(result)
                         return result
+                    
+                    stats = {f'x{i}': 0 for i in range(1, var_count+1)}
+
+                    with multiprocessing.pool.ThreadPool(len(solvers)) as pool:
+                        all_stats = pool.map(self.get_stats, [solver for solver in solvers])
+                    for stat, is_res in all_stats:
+                        if is_res:
+                            result = list({key: stat[key] for key in sorted(stat, key=lambda x: int(x[1:]))}.values())
+                            print(result)
+                            return result
+                        for key in stat.keys():
+                            stats[key] += stat[key]
 
 
-    def check_solvers(self, solvers: list[Solver], assumptions: list[any]) -> bool:
-        for solver in solvers:
-            is_sat = solver.check(assumptions)
-            if is_sat == unsat:
-                return False
-        return True 
+    def check_solver(self, solver: Solver, assumptions: list, ctx: Context) -> bool:
+        lock = threading.Lock()
+        with lock:
+            assumptions_ctx = [deepcopy(assumption).translate(ctx) for assumption in assumptions]
+
+        return solver.check(*assumptions_ctx) == sat
 
 
-    def get_stats(self, solvers: list[Solver]) -> dict[str, int]:
+
+
+    def get_stats(self, solver: Solver) -> (dict[str, int], bool):
         stats: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
-        for solver in solvers:
-            model = solver.model()
-            for res in model.decls():
-                if str(res).startswith('x'):
-                    if model[res]:
-                        stats[str(res)] += 1
-        return stats
+        model = solver.model()
+        for res in model.decls():
+            if str(res).startswith('x'):
+                if model[res]:
+                    stats[str(res)] += 1
+        result = list({key: stats[key] for key in sorted(stats, key=lambda x: int(x[1:]))}.values())
+            
+        factor = self.num_of_satisfied_equations(result)
+        
+        if factor >= (var_count * 2) - 1:
+            return stats, True
+        
+        modified_stats = {key: value * factor for key, value in stats.items()}
+
+        return modified_stats, False
 
 
 
@@ -561,17 +592,17 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 if (__name__ == '__main__'):
     np.random.seed(0)
 
-    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
-    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
+    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 10
     # solution_key = [0, 1, 1, 0, 1, ] # 5
     var_count = len(solution_key) # should be property of the matrix itself
     degree = 2
     matrix = generate_random_matrix_for_solution(solution_key)
-    # var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-75-0\\challenge-1-75-0")
-    col_names = generate_all_column_names(degree, var_count)
-    matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
+    # var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-55-0\\challenge-1-55-0")
+    # col_names = generate_all_column_names(degree, var_count)
+    # matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
 
 
     matrix = GF2Mat(matrix._xor_same_indices())
@@ -582,4 +613,4 @@ if (__name__ == '__main__'):
     # cProfile.run("matrix.test()", "test_profile")
     stats = pstats.Stats("test_profile")
     stats.sort_stats('cumulative')
-    stats.print_stats(100)
+    stats.print_stats(20)
