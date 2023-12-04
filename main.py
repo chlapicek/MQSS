@@ -7,7 +7,6 @@ import numba
 import cProfile
 import pstats
 import multiprocessing.pool
-import threading
 from copy import deepcopy
 from z3 import *
 from tqdm import tqdm
@@ -113,64 +112,6 @@ class GF2Mat(pandas.DataFrame):
         if result.shape[1] != len(self.columns)-1:
             return pandas.DataFrame([])
         return pandas.DataFrame(result, columns=columns)
-
-
-    # def solve(self):
-    #     start_time = time.time()
-    #     self = GF2Mat(self._xor_same_indices())
-
-    #     copy = GF2Mat(self.copy())
-    #     self.set_x_variables_to_zero(var_count//2)
-    #     guessed = self.guessed_variables.copy()
-    #     self = GF2Mat(self.galois_row_reduce())
-    #     cycle = True
-    #     while cycle:
-    #         for combination in self._get_next_combination():
-    #             if (combination[0] == -1):
-    #                 cycle = False
-    #                 break
-    #             self = GF2Mat(copy.copy())
-    #             for i in range(len(guessed)):
-    #                 self.set_variable(guessed[i], combination[i], True)
-    #             self = GF2Mat(self.galois_row_reduce())
-
-    #             if (self.has_solution()):
-    #                 if (self.solve_linear()):
-    #                     cycle = False
-    #                     break
-
-    #     print(self.solution)   
-    #     end_time = time.time()
-    #     elapsed_time = end_time - start_time
-    #     print(elapsed_time)
-
-
-    # def solve_linear(self) -> bool: 
-    #     linear = GF2Mat([])
-    #     generate_more = 1
-    #     self = GF2Mat(self.galois_row_reduce())
-    #     self = GF2Mat(self.drop_empty_rows())
-    #     while (len(linear.index) + len(self.solution) < var_count):
-    #         self = GF2Mat(self.generate_new_rows(generate_more))
-    #         self = GF2Mat(self.drop_zeros_only_columns())
-    #         # self = GF2Mat(self.galois_row_reduce())
-    #         self = GF2Mat(self.drop_empty_rows())
-    #         linear = GF2Mat(self.get_linear_submatrix())
-    #         if (generate_more >= 3):
-    #             self.degree += 1
-    #             generate_more = 1
-    #         generate_more += 1
-    #         if self.degree > var_count:
-    #             break
-    #     if not linear.has_solution():
-    #         return False
-    #     result = linear.numpy_linalg_solve()
-    #     if (result.size > 0):
-    #         result_dict = result.to_dict()
-    #         for res in result_dict:
-    #             self.set_variable(res[0], result_dict[res][0], False)
-    #         return True
-    #     return False
 
 
     def set_variable(self, variable: int, value: int, guessed: bool = False, drop: bool = True)-> None:
@@ -421,84 +362,122 @@ class GF2Mat(pandas.DataFrame):
 
         return solver
 
-
-    def find_variables(self, group_size: int):
+    # add threadpools for init?
+    def init_solvers(self, group_size) -> (list[Solver], dict[Solver, Context]):
         row_count = self.shape[0]
-        stats: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
         solvers = []
         contexts: dict[Solver, Context] = {}
         solver_count = np.int32(np.ceil(row_count/group_size) * 1.5)
-
+        
         for _ in range(solver_count):
             rows = list(self.sample(n=group_size).T.columns)
             solver_ctx = Context()
             solver = self.transform_to_z3(rows, solver_ctx)
+            if solver.check() != sat:
+                return ([], {})
             contexts[solver] = solver_ctx
             solvers.append(solver)
+        return solvers, contexts
+    
+    
+    def set_var(self, var_name: str, var: bool, assumptions: list, determined_vars: dict[str, bool]) -> None:
+        determined_vars[var_name] = var
+        assumptions.append(Bool(var_name) if var else Not(Bool(var_name)))
+
+
+    def set_vars(self, combination: list[bool], assumptions: list, determined_vars: dict[str, bool]) -> None:
+        for index, var in enumerate(combination):
+            self.set_var(f"x{index+1}", var, assumptions, determined_vars)
+
+
+    def determine_additional_vars(self, stats: dict[str, int], assumptions: list, determined_vars: dict[str, bool]) -> None:
+        max_stat = -1
+        max_count = 0
+        min_stat = np.inf
+        min_count = 0
+        for key in stats.keys():
+            if stats[key] == 0 and not (key in determined_vars):
+                determined_vars[key] = False
+                assumptions.append(Not(Bool(key)))
+            if stats[key] >= max_stat and not (key in determined_vars):
+                if stats[key] == max_stat:
+                    max_count += 1
+                else:
+                    max_count = 1
+                max_stat = stats[key]
+            if stats[key] <= min_stat and not (key in determined_vars):
+                if stats[key] == min_stat:
+                    min_count += 1
+                else:
+                    min_count = 1
+                    min_stat = stats[key]
+        
+        if max_count > min_count:
+            for key in stats.keys():
+                if stats[key] == max_stat:
+                    determined_vars[key] = True
+                    assumptions.append(Bool(key))
+        elif min_count > 0:
+            for key in stats.keys():
+                if stats[key] == min_stat:
+                    determined_vars[key] = False
+                    assumptions.append(Not(Bool(key)))
+
+
+    def solve_combination(self, combination: list[bool], solvers: list[Solver], contexts: dict[Solver, Context]) -> list[int]:
+        determined_vars: dict[str, bool] = {}
+        assumptions = []
+        stats: dict[str, int] = {}
+        self.set_vars(combination, assumptions, determined_vars)
+
+        while len(determined_vars) < var_count:
+            self.determine_additional_vars(stats, assumptions, determined_vars)
+            
+            assumptions_ctx = {}
+            for solver in solvers:
+                assumptions_ctx[solver] = [deepcopy(assumption).translate(contexts[solver]) for assumption in assumptions]
+
+            with multiprocessing.pool.ThreadPool(len(solvers)) as pool:
+                all_results = pool.starmap(self.check_solver, [(solver, assumptions_ctx[solver]) for solver in solvers])
+            if not all(all_results):
+                break
+                    
+            result = []
+            for i in range(1, var_count+1):
+                result.append(1 if f"x{i}" in determined_vars and determined_vars[f"x{i}"] else 0)
+            is_result = self.is_valid_solution(result)
+            if is_result:
+                print(result)
+                return result
+            
+            stats = {f'x{i}': 0 for i in range(1, var_count+1)}
+            
+            with multiprocessing.pool.ThreadPool(len(solvers)) as pool:
+                all_stats = pool.map(self.get_stats, [solver for solver in solvers])
+
+            for stat, is_res in all_stats:
+                if is_res:
+                    result = list({key: stat[key] for key in sorted(stat, key=lambda x: int(x[1:]))}.values())
+                    print(result)
+                    return result
+                for key in stat.keys():
+                    stats[key] += stat[key]
+        return []
+
+
+    def find_variables(self, group_size: int):
+        solvers, contexts = self.init_solvers(group_size)
 
         for i in range(1, var_count+1):
-            combinations = list(itertools.product([False, True], repeat=i))
-            for combination in tqdm(combinations):
-                determined_vars = {}
-                assumptions = []
-                for index, var in enumerate(combination):
-                    var_name = f"x{index+1}"
-                    determined_vars[var_name] = var
-                    assumptions.append(Bool(var_name) if var else Not(Bool(var_name)))
+            combinations = itertools.product([False, True], repeat=i)
+            for combination in tqdm(combinations, total=pow(2, i)):
+                res = self.solve_combination(combination, solvers, contexts)
+                if len(res):
+                    return res
+               
 
-                while len(determined_vars) < var_count:
-                    max_stat = -1
-                    min_stat = solver_count + 1
-                    max_var_name = ""
-                    min_var_name = ""
-                    for key in stats.keys():
-                        if stats[key] > max_stat and not (key in determined_vars):
-                            max_stat = stats[key]
-                            max_var_name = key
-                        if stats[key] < min_stat and not (key in determined_vars):
-                            min_stat = stats[key]
-                            min_var_name = key
-                    if min_stat < solver_count - max_stat:
-                        determined_vars[min_var_name] = False
-                        assumptions.append(Not(Bool(min_var_name)))
-                    else:
-                        determined_vars[max_var_name] = True
-                        assumptions.append(Bool(max_var_name))
-
-                    with multiprocessing.pool.ThreadPool(len(solvers)) as pool:
-                        all_results = pool.starmap(self.check_solver, [(solver, assumptions, contexts[solver]) for solver in solvers])
-                    if not all(all_results):
-                        break
-                    
-                    result = []
-                    for i in range(1, var_count+1):
-                        result.append(1 if f"x{i}" in determined_vars and determined_vars[f"x{i}"] else 0)
-                    is_result = self.is_valid_solution(result)
-                    if is_result:
-                        print(result)
-                        return result
-                    
-                    stats = {f'x{i}': 0 for i in range(1, var_count+1)}
-
-                    with multiprocessing.pool.ThreadPool(len(solvers)) as pool:
-                        all_stats = pool.map(self.get_stats, [solver for solver in solvers])
-                    for stat, is_res in all_stats:
-                        if is_res:
-                            result = list({key: stat[key] for key in sorted(stat, key=lambda x: int(x[1:]))}.values())
-                            print(result)
-                            return result
-                        for key in stat.keys():
-                            stats[key] += stat[key]
-
-
-    def check_solver(self, solver: Solver, assumptions: list, ctx: Context) -> bool:
-        lock = threading.Lock()
-        with lock:
-            assumptions_ctx = [deepcopy(assumption).translate(ctx) for assumption in assumptions]
-
-        return solver.check(*assumptions_ctx) == sat
-
-
+    def check_solver(self, solver: Solver, assumptions: list) -> bool:
+        return solver.check(assumptions) == sat
 
 
     def get_stats(self, solver: Solver) -> (dict[str, int], bool):
@@ -518,10 +497,6 @@ class GF2Mat(pandas.DataFrame):
         modified_stats = {key: value * factor for key, value in stats.items()}
 
         return modified_stats, False
-
-
-
-
 
 
 def generate_col_names(n: int) -> list[str]:
@@ -590,10 +565,10 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 
 
 if (__name__ == '__main__'):
-    np.random.seed(0)
+    np.random.seed(1)
 
-    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
-    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
+    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 10
     # solution_key = [0, 1, 1, 0, 1, ] # 5
