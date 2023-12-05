@@ -1,19 +1,21 @@
 import numpy as np
 import pandas
 import galois
-import time
+# import time
 import itertools
-import numba
+# import numba
 import cProfile
 import pstats
 import multiprocessing.pool
+from collections import defaultdict
 from copy import deepcopy
 from z3 import *
 from tqdm import tqdm
 
 class GF2Mat(pandas.DataFrame):
-    solution = {}
-    guessed_variables = []
+    # solution = {}
+    # guessed_variables = []
+    most_common: dict[str, int] = {}
 
     def drop_zeros_only_columns(self) -> pandas.DataFrame:
         # https://stackoverflow.com/questions/21164910/how-do-i-delete-a-column-that-contains-only-zeros-in-pandas
@@ -21,7 +23,7 @@ class GF2Mat(pandas.DataFrame):
 
 
     def galois_row_reduce(self) -> pandas.DataFrame:
-        np_arr: np.array = pandas.DataFrame.to_numpy(self, dtype=np.uint8)
+        np_arr = pandas.DataFrame.to_numpy(self, dtype=np.uint8)
         gf2 = galois.GF2(np_arr, dtype=np.uint8)
         gf2 = gf2.row_reduce()
         return pandas.DataFrame(gf2, columns=self.columns)
@@ -63,11 +65,7 @@ class GF2Mat(pandas.DataFrame):
         return solution_row
 
 
-    def swap_columns(self, index1: int, index2: int) -> pandas.DataFrame:
-        self.loc[index1], self.loc[index2] = self.loc[index2], self.loc[index1]
-
-
-    def _xor_same_indices(self, drop: bool = True) -> pandas.DataFrame:
+    def _xor_same_indices(self, drop: bool = True):
         # TODO Verify if the column exists first
         for x in range(2, degree+1):
             for index in range(1, var_count+1):
@@ -363,7 +361,7 @@ class GF2Mat(pandas.DataFrame):
         return solver
 
     # add threadpools for init?
-    def init_solvers(self, group_size) -> (list[Solver], dict[Solver, Context]):
+    def init_solvers(self, group_size) -> tuple[list[Solver], dict[Solver, Context]]:
         row_count = self.shape[0]
         solvers = []
         contexts: dict[Solver, Context] = {}
@@ -385,27 +383,36 @@ class GF2Mat(pandas.DataFrame):
         assumptions.append(Bool(var_name) if var else Not(Bool(var_name)))
 
 
-    def set_vars(self, combination: list[bool], assumptions: list, determined_vars: dict[str, bool]) -> None:
+    def set_vars(self, combination: tuple[bool, ...], assumptions: list, determined_vars: dict[str, bool], offset: int = 0) -> None:
+        most_common_keys = list(self.most_common.keys())
         for index, var in enumerate(combination):
-            self.set_var(f"x{index+1}", var, assumptions, determined_vars)
+            self.set_var(most_common_keys[index], var, assumptions, determined_vars)
 
 
-    def determine_additional_vars(self, stats: dict[str, int], assumptions: list, determined_vars: dict[str, bool]) -> None:
+    def determine_additional_vars(self, stats: dict[str, int], assumptions: list, determined_vars: dict[str, bool], threshold: int=0) -> None:
         max_stat = -1
         max_count = 0
         min_stat = np.inf
         min_count = 0
+        
+        reversed_stats = find_keys_with_same_values(stats)
+        for key in reversed_stats:
+            arr = reversed_stats[key]
+            for i in range(len(arr)-1):
+                assumptions.append(Bool(arr[i]) == Bool(arr[i+1]))
+                
+        
         for key in stats.keys():
             if stats[key] == 0 and not (key in determined_vars):
                 determined_vars[key] = False
                 assumptions.append(Not(Bool(key)))
-            if stats[key] >= max_stat and not (key in determined_vars):
+            if stats[key] >= max_stat-threshold and not (key in determined_vars):
                 if stats[key] == max_stat:
                     max_count += 1
                 else:
                     max_count = 1
                 max_stat = stats[key]
-            if stats[key] <= min_stat and not (key in determined_vars):
+            if stats[key] <= min_stat+threshold and not (key in determined_vars):
                 if stats[key] == min_stat:
                     min_count += 1
                 else:
@@ -414,21 +421,21 @@ class GF2Mat(pandas.DataFrame):
         
         if max_count > min_count:
             for key in stats.keys():
-                if stats[key] == max_stat:
+                if stats[key] >= max_stat-threshold and not (key in determined_vars):
                     determined_vars[key] = True
                     assumptions.append(Bool(key))
         elif min_count > 0:
             for key in stats.keys():
-                if stats[key] == min_stat:
+                if stats[key] <= min_stat+threshold and not (key in determined_vars):
                     determined_vars[key] = False
                     assumptions.append(Not(Bool(key)))
 
 
-    def solve_combination(self, combination: list[bool], solvers: list[Solver], contexts: dict[Solver, Context]) -> list[int]:
+    def solve_combination(self, combination: tuple[bool, ...], solvers: list[Solver], contexts: dict[Solver, Context], offset: int=0) -> list[int]:
         determined_vars: dict[str, bool] = {}
         assumptions = []
         stats: dict[str, int] = {}
-        self.set_vars(combination, assumptions, determined_vars)
+        self.set_vars(combination, assumptions, determined_vars, offset)
 
         while len(determined_vars) < var_count:
             self.determine_additional_vars(stats, assumptions, determined_vars)
@@ -467,6 +474,8 @@ class GF2Mat(pandas.DataFrame):
 
     def find_solution(self, group_size: int):
         solvers, contexts = self.init_solvers(group_size)
+                
+        self.set_most_common()
 
         for i in range(1, var_count+1):
             combinations = itertools.product([False, True], repeat=i)
@@ -480,7 +489,7 @@ class GF2Mat(pandas.DataFrame):
         return solver.check(assumptions) == sat
 
 
-    def get_stats(self, solver: Solver) -> (dict[str, int], bool):
+    def get_stats(self, solver: Solver) -> tuple[dict[str, int], bool]:
         stats: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
         model = solver.model()
         for res in model.decls():
@@ -499,7 +508,27 @@ class GF2Mat(pandas.DataFrame):
         return modified_stats, False
 
 
-def generate_col_names(n: int) -> list[str]:
+    def set_most_common(self) -> None:
+        most_common: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
+        for column in self.columns:
+            if column == (-1,):
+                continue
+            col_sum = self[column].sum()
+            for var in column:
+                most_common[f'x{var}'] += col_sum
+
+        self.most_common = dict(sorted(most_common.items(), key=lambda item: item[1], reverse=True)) 
+
+
+def find_keys_with_same_values(my_dict: dict) -> dict:
+    inverted_dict: dict = defaultdict(list)
+    for key, value in my_dict.items():
+        inverted_dict[value].append(key)
+    
+    return {value: keys for value, keys in inverted_dict.items() if len(keys) > 1}
+
+
+def generate_col_names(n: int) -> list[tuple[int, int|None]]:
     res = []
     for i in range(1, n+1):
         for j in range(1, i+1):
@@ -519,12 +548,12 @@ def generate_random_matrix_for_solution(solution: list[int]) -> GF2Mat:
             if elem == 1:
                 col_name = matrix.columns[index]
                 if len(col_name) == 2:
-                    var1 = col_name[0]-1
-                    var2 = col_name[1]-1
+                    var1 = int(col_name[0])-1
+                    var2 = int(col_name[1])-1
                     if (solution[var1] == 1 and solution[var2] == 1):
                         row[-1] = row[-1] ^ 1
-                elif col_name[0] > -1:
-                    var1 = col_name[0]-1
+                elif int(col_name[0]) > -1:
+                    var1 = int(col_name[0])-1
                     if (solution[var1] == 1):
                         row[-1] = row[-1] ^ 1
     return matrix
@@ -532,8 +561,8 @@ def generate_random_matrix_for_solution(solution: list[int]) -> GF2Mat:
 
 def generate_column_names(tuple_length: int, max_number: int, ignore_vars:list[int], filter_same: bool) -> list[tuple]:
     vars: list = list(range(1, max_number+1))
-    vars = np.setdiff1d(vars, ignore_vars)
-    names = list(itertools.combinations_with_replacement(vars, tuple_length))
+    modified_vars = np.setdiff1d(vars, ignore_vars)
+    names = list(itertools.combinations_with_replacement(modified_vars, tuple_length))
     if (filter_same):
         names = list(filter(lambda x: len(set(x)) == tuple_length, names))
     for i in range(tuple_length):
@@ -550,9 +579,9 @@ def generate_all_column_names(highest_tuple_length: int, max_number: int, ignore
 
 
 
-def load_data_from_file(path: str) -> tuple[int, np.array]:
+def load_data_from_file(path: str) -> tuple[int, list]:
     var_count: int = -1
-    matrix: np.array = [] 
+    matrix = [] 
     with open(path, encoding="utf-8") as f:
         for line in f:
             if (line.find("(n)") > -1):
@@ -567,8 +596,8 @@ def load_data_from_file(path: str) -> tuple[int, np.array]:
 if (__name__ == '__main__'):
     np.random.seed(0)
 
-    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
-    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
+    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 10
     # solution_key = [0, 1, 1, 0, 1, ] # 5
