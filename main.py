@@ -264,8 +264,8 @@ class GF2Mat(pandas.DataFrame):
             with multiprocessing.pool.ThreadPool(len(solvers)) as pool:
                 all_results = pool.starmap(self.check_solver, [(solver, assumptions_ctx[solver]) for solver in solvers])
             if not all(all_results):
-                break
-                    
+                return []
+
             result = []
             for i in range(1, var_count+1):
                 result.append(1 if f"x{i}" in determined_vars and determined_vars[f"x{i}"] else 0)
