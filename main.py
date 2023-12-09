@@ -185,7 +185,7 @@ class GF2Mat(pandas.DataFrame):
         assumptions.append(Bool(var_name) if var else Not(Bool(var_name)))
 
 
-    def set_vars(self, combination: tuple[bool, ...], assumptions: list, determined_vars: dict[str, bool], offset: int = 0) -> None:
+    def set_vars(self, combination: tuple[bool, ...], assumptions: list, determined_vars: dict[str, bool]) -> None:
         most_common_keys = list(self.most_common.keys())
         for index, var in enumerate(combination):
             self.set_var(most_common_keys[index], var, assumptions, determined_vars)
@@ -252,16 +252,16 @@ class GF2Mat(pandas.DataFrame):
         
 
 
-    def solve_combination(self, combination: tuple[bool, ...], solvers: list[Solver], contexts: dict[Solver, Context], offset: int=0) -> list[int]:
+    def solve_combination(self, combination: tuple[bool, ...], solvers: list[Solver], contexts: dict[Solver, Context], threshold: int = 0) -> list[int]:
         determined_vars: dict[str, bool] = {}
         assumptions = []
         stats: dict[str, int] = {}
-        self.set_vars(combination, assumptions, determined_vars, offset)
+        self.set_vars(combination, assumptions, determined_vars)
 
         vars_needed = self.vars_needed
 
         while len(determined_vars) < vars_needed:
-            self.determine_additional_vars(stats, assumptions, determined_vars, var_count*2)
+            self.determine_additional_vars(stats, assumptions, determined_vars, threshold)
             
             assumptions_ctx = {}
             for solver in solvers:
@@ -309,7 +309,7 @@ class GF2Mat(pandas.DataFrame):
         return []
 
 
-    def find_solution(self, group_size: int = 10, solver_count: int = 10, start_len: int = 1):
+    def find_solution(self, group_size: int = 10, solver_count: int = 10, start_len: int = 1, threshold: int = 0):
         solvers, contexts = self.init_solvers(group_size, solver_count)
                 
         self.set_most_common()
@@ -318,7 +318,7 @@ class GF2Mat(pandas.DataFrame):
         for i in range(start_len, var_count+1):
             combinations = itertools.product([False, True], repeat=i)
             for combination in tqdm(combinations, total=pow(2, i)):
-                res = self.solve_combination(combination, solvers, contexts)
+                res = self.solve_combination(combination, solvers, contexts, threshold)
                 if len(res):
                     return res
                
@@ -467,7 +467,12 @@ if (__name__ == '__main__'):
     matrix = GF2Mat(matrix._xor_same_indices())
     matrix = GF2Mat(matrix.galois_row_reduce())
 
-    cProfile.run("matrix.find_solution(10, 10, 10)", "test_profile")
+    group_size = 10
+    solver_count = math.floor((matrix.shape[0] // group_size) * 1.5)
+    start_len = 12
+    threshold = matrix.shape[0]
+
+    cProfile.run("matrix.find_solution(group_size, solver_count, start_len, threshold)", "test_profile")
 
     # cProfile.run("matrix.test()", "test_profile")
     stats = pstats.Stats("test_profile")
