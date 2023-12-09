@@ -3,6 +3,7 @@ import pandas
 import galois
 # import time
 import itertools
+from functools import reduce
 import re
 # import numba
 import cProfile
@@ -135,22 +136,14 @@ class GF2Mat(pandas.DataFrame):
     def transform_to_z3(self, row_indices: list[int], ctx: Context) -> Solver:
         solver = Solver(ctx=ctx)
         colNameToVar = {}
-        counter = 1
 
-        for column in self.columns:
-            if len(column) > 1:
-                colNameToVar[column] = Bool(f"y{counter}", ctx)
-                counter += 1
-            elif column == (-1,):
-                continue
-            else:
+        col_names = sorted(self.columns, key=len)
+
+        for column in col_names:
+            if len(column) == 1 and column != (-1,):
                 colNameToVar[column] = Bool(f"x{column[0]}", ctx)
-
-        for column in self.columns:
-            if len(column) > 1:
-                solver.add(And( Or(colNameToVar[column], Not(colNameToVar[(column[0],)]), Not(colNameToVar[(column[1],)])),
-                                Or(colNameToVar[(column[0],)], Not(colNameToVar[column])),
-                                Or(colNameToVar[(column[1],)], Not(colNameToVar[column]))))
+            elif len(column) > 1:
+                colNameToVar[column] = And(list(map(lambda index: colNameToVar[(index,)], column)))
 
         for index in row_indices:
             is_odd = False
@@ -160,7 +153,8 @@ class GF2Mat(pandas.DataFrame):
                     is_odd = True
                 elif value == 1:
                     vars.append(colNameToVar[col_name])
-            solver.add(Sum([If(b, 1, 0) for b in vars]) % 2 == is_odd)
+            xor_chain = reduce(lambda x, y: Xor(x, y), vars)
+            solver.add(xor_chain == is_odd)
 
         return solver
 
@@ -314,6 +308,8 @@ class GF2Mat(pandas.DataFrame):
                 
         self.set_most_common()
         self.set_vars_needed()
+        
+        counter = 0
 
         for i in range(start_len, var_count+1):
             combinations = itertools.product([False, True], repeat=i)
@@ -321,7 +317,11 @@ class GF2Mat(pandas.DataFrame):
                 res = self.solve_combination(combination, solvers, contexts, threshold)
                 if len(res):
                     return res
-               
+                if counter >= 100:
+                    solvers, contexts = self.init_solvers(group_size, solver_count)
+                    counter = 0
+                counter += 1
+
 
     def check_solver(self, solver: Solver, assumptions: list) -> bool:
         return solver.check(assumptions) == sat
@@ -451,26 +451,26 @@ def load_data_from_file(path: str) -> tuple[int, list]:
 if (__name__ == '__main__'):
     np.random.seed(0)
 
-    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
+    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 10
     # solution_key = [0, 1, 1, 0, 1, ] # 5
-    var_count = len(solution_key) # should be property of the matrix itself
+    # var_count = len(solution_key) # should be property of the matrix itself
     degree = 2
-    matrix = generate_random_matrix_for_solution(solution_key)
-    # var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-55-0\\challenge-1-55-0")
-    # col_names = generate_all_column_names(degree, var_count)
-    # matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
+    # matrix = generate_random_matrix_for_solution(solution_key)
+    var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-55-0\\challenge-1-55-0")
+    col_names = generate_all_column_names(degree, var_count)
+    matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
 
 
-    matrix = GF2Mat(matrix._xor_same_indices())
-    matrix = GF2Mat(matrix.galois_row_reduce())
+    # matrix = GF2Mat(matrix._xor_same_indices())
+    # matrix = GF2Mat(matrix.galois_row_reduce())
 
     group_size = 10
     solver_count = math.floor((matrix.shape[0] // group_size) * 1.5)
-    start_len = 12
-    threshold = matrix.shape[0]
+    start_len = 1
+    threshold = matrix.shape[0]*2
 
     cProfile.run("matrix.find_solution(group_size, solver_count, start_len, threshold)", "test_profile")
 
