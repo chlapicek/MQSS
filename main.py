@@ -167,8 +167,6 @@ class GF2Mat(pandas.DataFrame):
             rows = list(self.sample(n=group_size).T.columns)
             solver_ctx = Context()
             solver = self.transform_to_z3(rows, solver_ctx)
-            if solver.check() != sat:
-                return ([], {})
             contexts[solver] = solver_ctx
             solvers.append(solver)
         return solvers, contexts
@@ -191,24 +189,35 @@ class GF2Mat(pandas.DataFrame):
         min_stat = np.inf
         min_count = 0
         
-        reversed_stats = find_keys_with_same_values(stats)
-        for key in reversed_stats:
-            arr = reversed_stats[key]
-            for i in range(len(arr)-1):
-                assumptions.append(Bool(arr[i]) == Bool(arr[i+1]))
+        # reversed_stats = find_keys_with_same_values(stats)
+        # for key in reversed_stats:
+        #     if key > (self.shape[0]) and key < max(reversed_stats) - (self.shape[0]):
+        #         continue
+        #     arr = reversed_stats[key]
+        #     for i in range(len(arr)-1):
+        #         if arr[i] in determined_vars:
+        #             assumptions.append(Bool(arr[i+1]) if determined_vars[arr[i]] else Not(Bool(arr[i+1])))
+        #             determined_vars[arr[i+1]] = determined_vars[arr[i]]
+        #         elif arr[i+1] in determined_vars:
+        #             assumptions.append(Bool(arr[i]) if determined_vars[arr[i+1]] else Not(Bool(arr[i])))
+        #             determined_vars[arr[i]] = determined_vars[arr[i+1]]
+        #         else:
+        #             expr = Bool(arr[i]) == Bool(arr[i+1])
+        #             if expr not in assumptions:
+        #                 assumptions.append(expr)
 
 
         for key in stats.keys():
             if stats[key] == 0 and not (key in determined_vars):
                 determined_vars[key] = False
                 assumptions.append(Not(Bool(key)))
-            if stats[key] >= max_stat-threshold and not (key in determined_vars):
+            if stats[key] >= max_stat-threshold and (not (key in determined_vars) or not determined_vars[key]):
                 if stats[key] == max_stat:
                     max_count += 1
                 else:
                     max_count = 1
                 max_stat = stats[key]
-            if stats[key] <= min_stat+threshold and not (key in determined_vars):
+            if stats[key] <= min_stat+threshold and (not (key in determined_vars) or determined_vars[key]):
                 if stats[key] == min_stat:
                     min_count += 1
                 else:
@@ -217,14 +226,22 @@ class GF2Mat(pandas.DataFrame):
         
         if max_count > min_count:
             for key in stats.keys():
-                if stats[key] >= max_stat-threshold and not (key in determined_vars):
+                if stats[key] >= max_stat-threshold and (not (key in determined_vars) or not determined_vars[key]):
                     determined_vars[key] = True
-                    assumptions.append(Bool(key))
+                    var = Bool(key)
+                    if var in assumptions:
+                        assumptions[assumptions.index(var)] = Not(var)
+                    else:
+                        assumptions.append(var)
         elif min_count > 0:
             for key in stats.keys():
-                if stats[key] <= min_stat+threshold and not (key in determined_vars):
+                if stats[key] <= min_stat+threshold and (not (key in determined_vars) or determined_vars[key]):
                     determined_vars[key] = False
-                    assumptions.append(Not(Bool(key)))
+                    var = Bool(key)
+                    if Not(var) in assumptions:
+                        assumptions[assumptions.index(Not(var))] = var
+                    else:
+                        assumptions.append(Not(var))
     
     
     def solve_linear(self, determined_vars: dict[str, bool]) -> pandas.DataFrame:
@@ -262,7 +279,7 @@ class GF2Mat(pandas.DataFrame):
                 assumptions_ctx[solver] = [deepcopy(assumption).translate(contexts[solver]) for assumption in assumptions]
 
             with multiprocessing.pool.ThreadPool(len(solvers)) as pool:
-                all_results = pool.starmap(self.check_solver, [(solver, assumptions_ctx[solver]) for solver in solvers])
+                all_results = pool.starmap(self.check_solver, [(solver, assumptions_ctx[solver], contexts[solver]) for solver in solvers])
             if not all(all_results):
                 return []
 
@@ -317,13 +334,53 @@ class GF2Mat(pandas.DataFrame):
                 res = self.solve_combination(combination, solvers, contexts, threshold)
                 if len(res):
                     return res
-                if counter >= 100:
+                if counter >= 50:
                     solvers, contexts = self.init_solvers(group_size, solver_count)
                     counter = 0
                 counter += 1
 
 
-    def check_solver(self, solver: Solver, assumptions: list) -> bool:
+    def check_solver(self, solver: Solver, assumptions: list, ctx: Context) -> bool:
+        if solver.check(assumptions) != sat:
+            return False
+        
+        lowest = sum(set(self.get_stats(solver)[0].values()))
+
+        if lowest == 0:
+            return True
+
+        stats: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
+        model = solver.model()
+        for res in model.decls():
+            if str(res).startswith('x'):
+                if model[res]:
+                    stats[str(res)] += 1
+        result = list({key: stats[key] for key in sorted(stats, key=lambda x: int(x[1:]))}.values())
+            
+        lowest = self.num_of_satisfied_equations(result)
+        
+        for key, value in stats.items():
+            stats_copy = stats.copy()
+            if value == 1:
+                stats_copy[key] = 0
+            else:
+                stats_copy[key] = 1
+            
+            res = list({stat_key: stats_copy[stat_key] for stat_key in sorted(stats_copy, key=lambda x: int(x[1:]))}.values())
+            current = self.num_of_satisfied_equations(res)
+            if current > lowest:
+                lowest = current
+                stats[key] = (value + 1) % 2
+                var = Bool(key, ctx)
+                not_var = Not(var, ctx)
+                if var in assumptions:
+                    index = assumptions.index(var)
+                    assumptions[index] = (var if stats[key] == 1 else not_var)
+                elif not_var in assumptions:
+                    index = assumptions.index(not_var)
+                    assumptions[index] = (var if stats[key] == 1 else not_var)
+                else:
+                    assumptions.append(var if stats[key] == 1 else not_var)
         return solver.check(assumptions) == sat
 
 
@@ -451,30 +508,30 @@ def load_data_from_file(path: str) -> tuple[int, list]:
 if (__name__ == '__main__'):
     np.random.seed(0)
 
-    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
+    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 40
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 10
     # solution_key = [0, 1, 1, 0, 1, ] # 5
-    # var_count = len(solution_key) # should be property of the matrix itself
+    var_count = len(solution_key) # should be property of the matrix itself
     degree = 2
-    # matrix = generate_random_matrix_for_solution(solution_key)
-    var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-55-0\\challenge-1-55-0")
-    col_names = generate_all_column_names(degree, var_count)
-    matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
+    matrix = generate_random_matrix_for_solution(solution_key)
+    # var_count, matrix = load_data_from_file("C:\\Users\\vojts\\Documents\\school\\bakalarka\\MQSS\\data\\challenge-1-55-0\\challenge-1-55-0")
+    # col_names = generate_all_column_names(degree, var_count)
+    # matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
 
 
-    # matrix = GF2Mat(matrix._xor_same_indices())
-    # matrix = GF2Mat(matrix.galois_row_reduce())
+    matrix = GF2Mat(matrix._xor_same_indices())
+    matrix = GF2Mat(matrix.galois_row_reduce())
 
     group_size = 10
     solver_count = math.floor((matrix.shape[0] // group_size) * 1.5)
     start_len = 1
-    threshold = matrix.shape[0]*2
+    threshold = 0
 
     cProfile.run("matrix.find_solution(group_size, solver_count, start_len, threshold)", "test_profile")
 
-    # cProfile.run("matrix.test()", "test_profile")
     stats = pstats.Stats("test_profile")
     stats.sort_stats('cumulative')
     stats.print_stats(20)
