@@ -1,18 +1,16 @@
+import cProfile
+import galois
+import itertools
+import multiprocessing.pool
 import numpy as np
 import pandas
-import galois
-# import time
-import itertools
-from functools import reduce
-import re
-# import numba
-import cProfile
 import pstats
-import multiprocessing.pool
+import re
 from collections import defaultdict
 from copy import deepcopy
-from z3 import *
+from functools import reduce
 from tqdm import tqdm
+from z3 import *
 
 class GF2Mat(pandas.DataFrame):
     """Main class extending pandas.DataFrame that contains the whole logic for all of the computation.
