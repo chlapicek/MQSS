@@ -15,15 +15,43 @@ from z3 import *
 from tqdm import tqdm
 
 class GF2Mat(pandas.DataFrame):
+    """Main class extending pandas.DataFrame that contains the whole logic for all of the computation.
+    The Matrix/DataFrame is a representation of a Galois Field(2).
+    """
     most_common: dict[str, int] = {}
     vars_needed: int = -1
 
-    def drop_zeros_only_columns(self) -> pandas.DataFrame:
-        # https://stackoverflow.com/questions/21164910/how-do-i-delete-a-column-that-contains-only-zeros-in-pandas
+    def drop_empty_columns(self) -> pandas.DataFrame:
+        """Drops columns containing only zeros.
+        
+        Does NOT modify self.
+
+        Returns:
+            pandas.DataFrame: new Dataframe without zero columns
+        """
         return self.loc[:, (self != 0).any(axis=0)]
+    
+    
+
+    def drop_empty_rows(self) -> pandas.DataFrame:
+        """Drops rows containing only zeros.
+
+        Does NOT modify self.
+        
+        Returns:
+            pandas.DataFrame: new Dataframe without zero rows
+        """
+        return self.loc[~(self == 0).all(axis=1)]
 
 
     def galois_row_reduce(self) -> pandas.DataFrame:
+        """Uses galois library to generate a DataFrame that is in reduced row echelon form.
+        
+        Does NOT modify self 
+
+        Returns:
+            pandas.DataFrame: new Dataframe in reduced row echelon form
+        """
         np_arr = pandas.DataFrame.to_numpy(self, dtype=np.uint8)
         gf2 = galois.GF2(np_arr, dtype=np.uint8)
         gf2 = gf2.row_reduce()
@@ -31,6 +59,11 @@ class GF2Mat(pandas.DataFrame):
 
 
     def has_solution(self) -> bool:
+        """Checks whether or not *self* contains a row that has 1 only in the last column  
+
+        Returns:
+            bool
+        """
         for row in self.values:
             if row[-1] == 1:
                 if sum(row) - row[-1] == 0:
@@ -39,20 +72,44 @@ class GF2Mat(pandas.DataFrame):
 
 
     def is_valid_solution(self, solution: list[int]) -> bool:
+        """Checks if a given *solution* is solution for the whole system
+
+        Args:
+            solution (list[int]): sorted list of keys (i. e. [x_1, x_2, ..., x_n])
+
+        Returns:
+            bool
+        """
         solution_row = self._get_solution_row(solution)
         if (len(solution_row) == 0):
-            return False # throw ex?
+            return False
         return ((self & solution_row).sum(axis=1) % 2 == 0).min()
 
 
     def num_of_satisfied_equations(self, solution: list[int]) -> int:
+        """Calculates the number of satisfied rows for a given *solution*
+
+        Args:
+            solution (list[int]): sorted list of keys (i. e. [x_1, x_2, ..., x_n])
+
+        Returns:
+            int: number of satisfied rows for a given solution
+        """
         solution_row = self._get_solution_row(solution)
         if (len(solution_row) == 0):
-            return 0 # throw ex?
+            return 0
         return sum((self & solution_row).sum(axis=1) % 2 == 0)
 
 
     def _get_solution_row(self, solution: list[int]) -> list[int]:
+        """Generates a special row from *solution* for easier checks of a whole matrix/DataFrame
+
+        Args:
+            solution (list[int]): sorted list of keys (i. e. [x_1, x_2, ..., x_n])
+
+        Returns:
+            list[int]: solution row
+        """
         if (len(solution) != var_count):
             return []
         col_names = self.iloc[0].axes[0]
@@ -66,7 +123,18 @@ class GF2Mat(pandas.DataFrame):
         return solution_row
 
 
-    def _xor_same_indices(self, drop: bool = True):
+    def _xor_same_indices(self, drop: bool = True) -> pandas.DataFrame:
+        """Xors columns that are composed from same indices. It can be done because the matrix is based on GF(2).
+        For example: (1, 1) and (1, )
+        
+        Modifies self
+
+        Args:
+            drop (bool, optional): Determines if the empty column should be dropped. Defaults to True.
+
+        Returns:
+            pandas.DataFrame: modified self
+        """
         # TODO Verify if the column exists first
         for x in range(2, degree+1):
             for index in range(1, var_count+1):
@@ -76,14 +144,17 @@ class GF2Mat(pandas.DataFrame):
                     self = self.drop(labels=index * x, axis=1)
                 else:
                     self[index] = 0
-            return self
-
-
-    def drop_empty_rows(self) -> pandas.DataFrame:
-        return self.loc[~(self == 0).all(axis=1)]
+        return self
 
 
     def get_degree_submatrix(self, degree: int) -> pandas.DataFrame:
+        """Creates a submatrix containing only columns with a given tuple length (degree)
+
+        Args:
+            degree (int): degree/tuple length
+        Returns:
+            pandas.DataFrame: new DataFrame containing only specified columns
+        """
         column_names = list(self.columns)
         column_names = list(filter(lambda x: len(x) == degree, column_names))
         if (degree == 0):
@@ -94,6 +165,11 @@ class GF2Mat(pandas.DataFrame):
 
 
     def get_linear_submatrix(self) -> pandas.DataFrame:
+        """Creates a linear submatrix using self.get_degree_submatrix (degree 1 and 2)
+
+        Returns:
+            pandas.DataFrame: new DataFrame containing only linear submatrix
+        """
         linear = pandas.concat([self.get_degree_submatrix(1), self.get_degree_submatrix(0)], axis=1)
         rest = self[~self.isin(linear)].dropna(axis=1)
         rows = []
@@ -104,6 +180,11 @@ class GF2Mat(pandas.DataFrame):
 
 
     def numpy_linalg_solve(self) -> pandas.DataFrame:
+        """Gets a linear submatrix and tries to solve it using numpy.linalg
+
+        Returns:
+            pandas.DataFrame: If there is a solution, it returns it in a DataFrame. Otherwise returns empty DataFrame.
+        """
         if (self.iloc[:, :-1] == 0).all(axis=1).any():
             return pandas.DataFrame([])
         coeff_matrix = pandas.DataFrame.to_numpy(self.iloc[:, 0:len(self)], dtype=np.uint8)
@@ -116,6 +197,20 @@ class GF2Mat(pandas.DataFrame):
 
 
     def set_variable(self, variable: int, value: bool, drop: bool = True)-> None:
+        """Sets a variable to a given value. Setting a variable means XORing columns
+        
+        Modifies self
+        
+        Examples:
+            if value is False, all of the columns containing variable in a column name are set to zero\n
+            If value is True, all of the columns containing variable are XORed with a column with a smaller degree.\n
+            (i. e. for variable=1 (1, 2) XOR (2,), (1, 3) XOR (3,), (1,) XOR (-1,))\n
+
+        Args:
+            variable (int): Int representing the var (i. e. x_1 = 1, ..., x_n = n) 
+            value (bool): What value should we set for the variable
+            drop (bool, optional): Whether or not columns should be dropped. Defaults to True.
+        """
         columns = sorted(self.columns, key=len, reverse=True)
         for column in columns:
             if variable in column:
@@ -134,6 +229,19 @@ class GF2Mat(pandas.DataFrame):
 
 
     def transform_to_z3(self, row_indices: list[int], ctx: Context) -> Solver:
+        """Creates a solver from given row indices from self with a given context
+        The rules for the transformation/creation are the following:\n
+            1. For every column name of degree 1 create a Bool(x_{index})\n
+            2. For every column name of higher degree create And statement containing all the Bools\n
+            3. For each given row create an assertion constructed from XORs of each 1 in a row\n
+
+        Args:
+            row_indices (list[int]): list of row indices from self 
+            ctx (Context): Context related to the solver and Vars
+
+        Returns:
+            Solver: z3.Solver
+        """
         solver = Solver(ctx=ctx)
         colNameToVar = {}
 
@@ -158,8 +266,17 @@ class GF2Mat(pandas.DataFrame):
 
         return solver
 
-    # add threadpools for init?
+
     def init_solvers(self, group_size: int, solver_count: int) -> tuple[list[Solver], dict[Solver, Context]]:
+        """Creates Solvers with randomly selected rows
+
+        Args:
+            group_size (int): number of rows that should be in every solver
+            solver_count (int): number of solver to be created
+
+        Returns:
+            tuple[list[Solver], dict[Solver, Context]]: Returns also contexts for a possibility to further modify the Solvers
+        """
         solvers = []
         contexts: dict[Solver, Context] = {}
         
@@ -172,18 +289,33 @@ class GF2Mat(pandas.DataFrame):
         return solvers, contexts
     
     
-    def set_var(self, var_name: str, var: bool, assumptions: list, determined_vars: dict[str, bool]) -> None:
-        determined_vars[var_name] = var
-        assumptions.append(Bool(var_name) if var else Not(Bool(var_name)))
+    def set_var(self, var_name: str, value: bool, assumptions: list, determined_vars: dict[str, bool]) -> None:
+        """Modifies assumptions and determined_vars for Solvers
+        """
+        determined_vars[var_name] = value
+        assumptions.append(Bool(var_name) if value else Not(Bool(var_name)))
 
 
     def set_vars(self, combination: tuple[bool, ...], assumptions: list, determined_vars: dict[str, bool]) -> None:
+        """Modifies assumptions and determined_vars for Solvers multiple times.
+            The vars to set are selected based on the frequency of 1 in their columns.         
+        """
         most_common_keys = list(self.most_common.keys())
         for index, var in enumerate(combination):
             self.set_var(most_common_keys[index], var, assumptions, determined_vars)
 
 
     def determine_additional_vars(self, stats: dict[str, int], assumptions: list, determined_vars: dict[str, bool], threshold: int=0) -> None:
+        """Determines additional vars for Solvers based on given stats.
+
+        Modifies assumptions and determined vars.
+
+        Args:
+            stats (dict[str, int]): Statistics for every var and number of occurences of 1 in the corresponding columns
+            assumptions (list): List of z3.Bools
+            determined_vars (dict[str, bool]): Dictionary of already determined vars (represented as "x_{index}") and its values
+            threshold (int, optional): Shifts the limit to determine additional var. The higher the limit, the more variables will be determined in a single call. Defaults to 0.
+        """
         max_stat = -1
         max_count = 0
         min_stat = np.inf
@@ -245,6 +377,19 @@ class GF2Mat(pandas.DataFrame):
     
     
     def solve_linear(self, determined_vars: dict[str, bool]) -> pandas.DataFrame:
+        """Solves a linear matrix using numpy lingalg module. The linear matrix is created using setting a variable for the GF2Mat (self._set_variable).
+        It returns empty DataFrame, if there is no solution or the linear matrix has more columns than rows.
+        If the linear matrix has more rows than cols, it takes just the first rows to find a solution.
+        
+        (The last point means it can return a solution, that is not valid for the whole matrix,
+        therefore after a solve_linear call there should be a check if the solution satisfies the whole matrix)
+
+        Args:
+            determined_vars (dict[str, bool]): Dictionary of already determined vars (represented as "x_{index}") and its values
+
+        Returns:
+            pandas.DataFrame: solution for the linear matrix, or empty DataFrame
+        """
         matrix = GF2Mat(self.copy())
         for key, value in determined_vars.items():
             var = int(re.search(r'\d+', key).group())
@@ -264,6 +409,21 @@ class GF2Mat(pandas.DataFrame):
 
 
     def solve_combination(self, combination: tuple[bool, ...], solvers: list[Solver], contexts: dict[Solver, Context], threshold: int = 0) -> list[int]:
+        """Tries to find a solution starting with a given bool combination.
+
+        Args:
+            combination (tuple[bool, ...]): bools to set in the beginning
+            solvers (list[Solver]): list of used Solvers
+            contexts (dict[Solver, Context]): Context related to the Solvers
+            threshold (int, optional): Used in self.determine_additional_vars. Defaults to 0.
+
+        Returns:
+            list[int]: Returns the result, or an empty array.
+
+            Example of a result:
+             x1 x2 x3 x4 x5
+            [1, 0, 0, 1, 1]
+        """
         determined_vars: dict[str, bool] = {}
         assumptions = []
         stats: dict[str, int] = {}
@@ -320,7 +480,23 @@ class GF2Mat(pandas.DataFrame):
         return []
 
 
-    def find_solution(self, group_size: int = 10, solver_count: int = 10, start_len: int = 1, threshold: int = 0):
+    def find_solution(self, group_size: int = 10, solver_count: int = 10, start_len: int = 1, skip: int = 0, threshold: int = 0) -> list[int]:
+        """Main function to use for finding the result for a given matrix/Dataframe.
+
+        Args:
+            group_size (int, optional): Number of rows for each solver. Defaults to 10.
+            solver_count (int, optional): Number of solvers. Defaults to 10.
+            start_len (int, optional): length of binary combination to start with. Defaults to 1.
+            skip (int, optional): Number of combinations to skip in the beginning. Defaults to 0.
+            threshold (int, optional): Used in self.determine_additional_vars. Defaults to 0.
+
+        Returns:
+            list[int]: Returns the result, or an empty array.
+
+            Example of a result:
+             x1 x2 x3 x4 x5
+            [1, 0, 0, 1, 1]
+        """
         solvers, contexts = self.init_solvers(group_size, solver_count)
                 
         self.set_most_common()
@@ -331,16 +507,28 @@ class GF2Mat(pandas.DataFrame):
         for i in range(start_len, var_count+1):
             combinations = itertools.product([False, True], repeat=i)
             for combination in tqdm(combinations, total=pow(2, i)):
+                if skip > 0:
+                    skip -= 1
+                    continue
                 res = self.solve_combination(combination, solvers, contexts, threshold)
                 if len(res):
                     return res
+                # it's good performance-wise to reset the solvers from time to time. Can probably be done with some Solver settings
                 if counter >= 50:
                     solvers, contexts = self.init_solvers(group_size, solver_count)
                     counter = 0
                 counter += 1
+        return []
 
 
     def check_solver(self, solver: Solver, assumptions: list, ctx: Context) -> bool:
+        """Checks solver if it is satisfiable with given assumptions.
+        
+        Modifies assumptions.  
+
+        Returns:
+            bool: Return whether or not solver with given assumptions has a solution
+        """
         if solver.check(assumptions) != sat:
             return False
         
@@ -385,6 +573,18 @@ class GF2Mat(pandas.DataFrame):
 
 
     def get_stats(self, solver: Solver) -> tuple[dict[str, int], bool]:
+        """Calculates statistics for a solver. The statistics are a number of satisfied rows for a solver solution.
+        
+        solver.check had to be called before and it had to return sat.
+
+        Returns:
+            tuple[dict[str, int], bool]: The first element in a tuple represents a dictionary with variable as a key and number of satisfied rows as a value,
+                and the second element is a bool representing whether or not it is a solution for a whole matrix  
+
+        Result Example:
+        ({'x1': 8, 'x2': 0, 'x3': 8, 'x4': 0, 'x5': 8}, False)
+        ({'x1': 1, 'x2': 0, 'x3': 0, 'x4': 1, 'x5': 1}, True)
+        """
         stats: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
         model = solver.model()
         for res in model.decls():
@@ -404,6 +604,8 @@ class GF2Mat(pandas.DataFrame):
 
 
     def set_most_common(self) -> None:
+        """Finds the most common variables (based on amount of 1 in their columns.
+        """
         most_common: dict[str, int] = {f'x{i}': 0 for i in range(1, var_count+1)}
         for column in self.columns:
             if column == (-1,):
@@ -416,6 +618,8 @@ class GF2Mat(pandas.DataFrame):
 
 
     def set_vars_needed(self) -> None:
+        """Determines how many vars have to be determined in order to use linalg solve.
+        """
         row_count = self.shape[0]
         col_count = self.shape[1]
         x = Int('x')
@@ -432,27 +636,21 @@ class GF2Mat(pandas.DataFrame):
         self.vars_needed = var_count - opt.model()[x].as_long()
 
 
-def find_keys_with_same_values(my_dict: dict) -> dict:
+def find_keys_with_same_values(_dict: dict) -> dict:
+    """Reverses a dictionary and keeps only those, which have more than two values (prev keys) for a key (prev value)
+
+    Returns:
+        dict: {prev_value: list[prev_keys]}
+    """
     inverted_dict: dict = defaultdict(list)
-    for key, value in my_dict.items():
+    for key, value in _dict.items():
         inverted_dict[value].append(key)
-    
+
     return {value: keys for value, keys in inverted_dict.items() if len(keys) > 1}
 
 
-def generate_col_names(n: int) -> list[tuple[int, int|None]]:
-    res = []
-    for i in range(1, n+1):
-        for j in range(1, i+1):
-            res.append((j, i))
-    for i in range(1, n+1):
-        res.append((i,))
-    res.append((-1,))
-    return res
-
-
 def generate_random_matrix_for_solution(solution: list[int]) -> GF2Mat:
-    col_names = generate_col_names(len(solution))
+    col_names = generate_all_column_names(2, len(solution), [], False)
     matrix = GF2Mat(np.random.randint(2, size=(var_count*2, len(col_names))), dtype=np.int8, columns=col_names)
     for row in matrix.values:
         row[-1] = 0
@@ -509,8 +707,8 @@ if (__name__ == '__main__'):
     np.random.seed(0)
 
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 40
-    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
-    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
+    # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 30
+    solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 20
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 15
     # solution_key = [0, 1, 1, 0, 1, 0, 1, 1, 0, 1, ] # 10
     # solution_key = [0, 1, 1, 0, 1, ] # 5
@@ -527,10 +725,11 @@ if (__name__ == '__main__'):
 
     group_size = 10
     solver_count = math.floor((matrix.shape[0] // group_size) * 1.5)
-    start_len = 1
+    start_len = var_count // 2
+    skip = 0
     threshold = 0
 
-    cProfile.run("matrix.find_solution(group_size, solver_count, start_len, threshold)", "test_profile")
+    cProfile.run("matrix.find_solution(group_size, solver_count, start_len, skip, threshold)", "test_profile")
 
     stats = pstats.Stats("test_profile")
     stats.sort_stats('cumulative')
