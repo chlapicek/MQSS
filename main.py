@@ -93,13 +93,13 @@ class GF2Mat(pandas.DataFrame):
         Returns:
             int: number of satisfied rows for a given solution
         """
-        solution_row = self._get_solution_row(solution)
+        solution_row = self.get_solution_row(solution)
         if (len(solution_row) == 0):
             return 0
         return sum((self & solution_row).sum(axis=1) % 2 == 0)
 
 
-    def _get_solution_row(self, solution: list[int]) -> list[int]:
+    def get_solution_row(self, solution: list[int]) -> list[int]:
         """Generates a special row from *solution* for easier checks of a whole matrix/DataFrame
 
         Args:
@@ -121,7 +121,7 @@ class GF2Mat(pandas.DataFrame):
         return solution_row
 
 
-    def _xor_same_indices(self, drop: bool = True) -> pandas.DataFrame:
+    def xor_same_indices(self, drop: bool = True) -> pandas.DataFrame:
         """Xors columns that are composed from same indices. It can be done because the matrix is based on GF(2).
         For example: (1, 1) and (1, )
         
@@ -133,15 +133,15 @@ class GF2Mat(pandas.DataFrame):
         Returns:
             pandas.DataFrame: modified self
         """
-        # TODO Verify if the column exists first
         for x in range(2, degree+1):
             for index in range(1, var_count+1):
                 index =  (index, )
-                self[index] = self[index * x] ^ self[index]
-                if drop:
-                    self = self.drop(labels=index * x, axis=1)
-                else:
-                    self[index] = 0
+                if index in self and index*x in self:
+                    self[index] = self[index * x] ^ self[index]
+                    if drop:
+                        self = self.drop(labels=index * x, axis=1)
+                    else:
+                        self[index] = 0
         return self
 
 
@@ -718,7 +718,7 @@ if (__name__ == '__main__'):
     # matrix = GF2Mat(matrix, columns=col_names, dtype=np.int0)
 
 
-    matrix = GF2Mat(matrix._xor_same_indices())
+    matrix = GF2Mat(matrix.xor_same_indices())
     matrix = GF2Mat(matrix.galois_row_reduce())
 
     group_size = 10
