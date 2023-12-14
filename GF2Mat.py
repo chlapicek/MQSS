@@ -13,14 +13,29 @@ from z3 import *
 class GF2Mat(pandas.DataFrame):
     """Main class extending pandas.DataFrame that contains the whole logic for all of the computation.
     The Matrix/DataFrame is a representation of a Galois Field(2).
+    
+    There are 4 additional properties in comparion with DataFrame.
+        degree: Determines the degree of the matrix. (also the maximum length of a tuple in column name)
+        var_count: Representing the amount of variables
+        most_common: A dictionary representing the most common variables. Most common means the sum of 1s in columns related to a variable
+        vars_needed: integer representing a number of variables, that has to be determined so numpy linalg can be used.
+    
+    After GF2Mat is created (some examples are in main.py) the entry point should be "GF2Mat.find_solution(...)".
+    
+    The idea of finding a solution is approximately like this:
+        1. From given Matrix create z3.Solvers that will have as assertions only a few random rows from the Matrix.
+        2. Determine some Vars based on a frequency of 1's in their column
+        3. Use these determined Vars as assumptions and get result for each created solver.
+        4. Calculate statistics how many rows from Matrix each solution satisfies.
+        5. Based on the statistics, determine additional Vars.
+        6. Repeat 2.-5. until the solution to the whole matrix/system is found, or I have determined enough Vars to use lingalg to get the rest of the Vars.
 
-    Args:
-        pandas (_type_): _description_
-
-    Returns:
-        _type_: _description_
+    NOTE:
+        This code is supposed to be a POC. There surely are many places where it could be more optimized, more parallelized and so on.
     """
-    most_common = {}
+
+    #declared like this, because otherwise pandas were showing a warning.
+    most_common: dict[str, int] = {}
 
     def __init__(self, degree: int, var_count: int, most_common: dict = {}, vars_needed: int = -1, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -278,7 +293,7 @@ class GF2Mat(pandas.DataFrame):
                 elif value == 1:
                     vars.append(colNameToVar[col_name])
             xor_chain = reduce(lambda x, y: Xor(x, y), vars)
-            solver.add(xor_chain == is_odd)
+            solver.add(simplify(xor_chain == is_odd))
 
         return solver
 
