@@ -463,8 +463,6 @@ class GF2Mat(pandas.DataFrame):
         vars_needed = self.vars_needed
 
         while len(determined_vars) < vars_needed:
-            self.determine_additional_vars(stats, assumptions, determined_vars, threshold)
-            
             assumptions_ctx = {}
             for solver in solvers:
                 assumptions_ctx[solver] = [deepcopy(assumption).translate(contexts[solver]) for assumption in assumptions]
@@ -494,7 +492,8 @@ class GF2Mat(pandas.DataFrame):
                     return result
                 for key in stat.keys():
                     stats[key] += stat[key]
-        
+            self.determine_additional_vars(stats, assumptions, determined_vars, threshold)
+
         res = self.solve_linear(determined_vars)
         
         if len(res):
